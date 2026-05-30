@@ -18,19 +18,18 @@ def save_message(
     content: str,
     mode: str,
     sources: list,
-)   -> dict:
-      doc =  {
-            "message_id": str(uuid.uuid4()),
-            "chat_id": chat_id,
-            "role": role,
-            "content": content,
-            "mode": mode,
-            "sources": sources,
-            "created_at": datetime.utcnow(),
-        }
-	messages_col().insert_one(doc)
-	return doc
-    )
+) -> dict:
+    doc = {
+        "message_id": str(uuid.uuid4()),
+        "chat_id": chat_id,
+        "role": role,
+        "content": content,
+        "mode": mode,
+        "sources": sources,
+        "created_at": datetime.utcnow(),
+    }
+    messages_col().insert_one(doc)
+    return doc
 
 
 def get_prior_messages(chat_id: str, n_pairs: int) -> list[dict]:
@@ -57,6 +56,6 @@ def get_all_messages(chat_id: str) -> list[dict]:
  
     )
     for m in msgs:
-	if isinstance(m.get("created_at"), datetime):
-	    m["created_at"] =  m["created_at"].isoformat()
-     return msgs
+        if isinstance(m.get("created_at"), datetime):
+            m["created_at"] =  m["created_at"].isoformat()
+    return msgs

@@ -39,23 +39,23 @@ async def lifespan(app: FastAPI):
     else:
         print("[KRUTRIM] parta dir: {PARTA_DIR}")
 
-      try:
-       db = get_mongo()[MONGO_DB]
-       db["chats"].create_index([("user_id", 1), ("updated_at", -1)])
-       db["chats"].create_index("chat_id", unique=True)
-       db["messages"].create_index([("chat_id", 1), ("created_at", 1)])
-       db["messages"].create_index("message_id", unique=True)
-       db["users"].create_index("email", unique=True)
-       print("[KRUTRIM] Part B ready.")
-   except Exception as exc:
-     print("[KRUTRIM] ERROR: {exc}")
+    try:
+        db = get_mongo()[MONGO_DB]
+        db["chats"].create_index([("user_id", 1), ("updated_at", -1)])
+        db["chats"].create_index("chat_id", unique=True)
+        db["messages"].create_index([("chat_id", 1), ("created_at", 1)])
+        db["messages"].create_index("message_id", unique=True)
+        db["users"].create_index("email", unique=True)
+        print("[KRUTRIM] Part B ready.")
+    except Exception as exc:
+        print(f"[KRUTRIM] ERROR: {exc}")
 
-from partb.retrieval.pipeline import warm_models
- print("[KRUTRIM] Warming models")
- asyncio.create_task(asyncio.to_thread(warm_models))
- print("[KRUTRIM] ")
- yield
- print("[KRUTRIM] shutting down ")
+    from partb.retrieval.pipeline import warm_models
+    print("[KRUTRIM] Warming models")
+    asyncio.create_task(asyncio.to_thread(warm_models))
+    print("[KRUTRIM] ")
+    yield
+    print("[KRUTRIM] shutting down ")
 
 app = FastAPI(title="KRUTRIM Part B", version="2.0.0", lifespan=lifespan, docs_url = "/api/docs", redoc_url = "/api/redoc")
 

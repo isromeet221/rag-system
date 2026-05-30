@@ -79,10 +79,9 @@ def login(body: LoginBody):
     role = user.get("role") or "user"
     token = create_token(user["user_id"], user["name"], user["email"], role)
     return {
-            "token": token
-            "user_id": user["user_id"],
-            "name": user["name"],
-            "email": user["email"],
-            "role": role,
-        }
+        "token": token,
+        "user_id": user["user_id"],
+        "name": user["name"],
+        "email": user["email"],
+        "role": role,
     }

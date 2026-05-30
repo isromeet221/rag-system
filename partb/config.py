@@ -31,21 +31,27 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS =8
 
 # LiteLLM OpenAI-compatible proxy (Master)
-LITELLM_BASE_URL  "http://127.0.0.1:4000/v1"
+LITELLM_BASE_URL = "http://127.0.0.1:4000/v1"
 LITELLM_API_KEY = ""
 
 # If "1", stream from local Ollama /api/generate instead (dev fallback)
-USE_OLLAMA_DIRECT =FALSE
+USE_OLLAMA_DIRECT = False
 OLLAMA_URL =  "http://127.0.0.1:11434"
 
 QDRANT_URL =  "http://localhost:6333"
-COLLECTIIONS_PROPS = "RAG_PROPOSITIons"
-COLLECTIIONS_SECTIONS = "RAG_sections"
+COLLECTION_PROPS = "RAG_PROPOSITIons"
+COLLECTION_SECTIONS = "RAG_sections"
 
 
-RAG_NEO4J_URI", "bolt://localhost:7687"
-RAG_NEO4J_USER", "neo4j"
-RAG_NEO4J_PASSWORD", "sac@1234"
+NEO4J_URI = "bolt://localhost:7687"
+NEO4J_USER = "neo4j"
+NEO4J_PASSWORD = "sac@1234"
+
+ENTITY_LABELS = ["Component", "Material", "Specification", "Standard", "Entity"]
+NEO4J_ENTITY_LIMIT = 50
+PROP_RETRIEVE_LIMIT = 40
+SECT_RETRIEVE_LIMIT = 40
+PAGE_EXPAND_MAX_CHARS = 9000
 
 
 # Retrieval constants (aligned with parta/test.py)
