@@ -80,7 +80,7 @@ async def health():
     try:
         from partb.retrieval.pipeline import get_qdrant
 
-        qc = _load_qdrant()
+        qc = get_qdrant()
         info = qc.get_collections()
         collection_names = [c.name for c in info.collections]
        
@@ -100,7 +100,6 @@ async def health():
         status["qdrant"] = {
             "status": "ok",
             "collections": [c.name for c in info.collections],
-            "collection": COLLECTION_NAME,
         }
     except Exception as e:
         status["qdrant"] = {"status": "error", "detail": str(e)}

@@ -130,7 +130,8 @@ def get_qdrant():
     global _qdrant_cl
     if _qdrant_cl is None:
         from qdrant_client import QdrantClient
-        _qdrant_cl = QdrantClient(url=QDRANT_URL)
+        from partb.config import QDRANT_API_KEY
+        _qdrant_cl = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
     return _qdrant_cl
 
 

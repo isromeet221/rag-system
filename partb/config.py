@@ -21,7 +21,8 @@ QDRANT_DIR = PARTA_DATA_DIR / "qdrant"
 
 
 # Mongo (same as Part A defaults)
-MONGO_URI = "mongodb://localhost:27017"
+# MONGO_URI = "mongodb://localhost:27017"
+MONGO_URI = "mongodb+srv://redrepter:ncq4fIo18UK948dV@krutrim.li124fs.mongodb.net/?appName=krutrim"
 MONGO_DB =  "rag_system"
 
 
@@ -31,23 +32,51 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS =8
 
 # LiteLLM OpenAI-compatible proxy (Master)
-LITELLM_BASE_URL = "http://127.0.0.1:4000/v1"
-LITELLM_API_KEY = ""
+# LITELLM_BASE_URL = "http://127.0.0.1:4000/v1"
+# LITELLM_API_KEY = ""
+LITELLM_BASE_URL = "https://api.mistral.ai/v1"
+LITELLM_API_KEY = "yU15nPBcRPH0myzxjlZBQATOvDBRSgQB"
 
 # If "1", stream from local Ollama /api/generate instead (dev fallback)
 USE_OLLAMA_DIRECT = False
 OLLAMA_URL =  "http://127.0.0.1:11434"
 
-QDRANT_URL =  "http://localhost:6333"
+# QDRANT_URL =  "http://localhost:6333"
+QDRANT_URL = "https://ec85c2a8-9447-4153-852a-3ddb9f369324.australia-southeast1-0.gcp.cloud.qdrant.io"
+QDRANT_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIiwic3ViamVjdCI6ImFwaS1rZXk6YzE4OTkzYWYtNTJiNi00NjkwLWFkMWUtMjRjMzNiMmYyYWE1In0.eW0QstWU__d8fxEvi09i4YPLCPflkwjzKZNLPFpElGE"
 COLLECTION_PROPS = "RAG_PROPOSITIons"
 COLLECTION_SECTIONS = "RAG_sections"
 
 
-NEO4J_URI = "bolt://localhost:7687"
-NEO4J_USER = "neo4j"
-NEO4J_PASSWORD = "sac@1234"
+# NEO4J_URI = "bolt://localhost:7687"
+# NEO4J_USER = "neo4j"
+# NEO4J_PASSWORD = "sac@1234"
+NEO4J_URI = "neo4j+s://95a8070a.databases.neo4j.io"
+NEO4J_USER = "95a8070a"
+NEO4J_PASSWORD = "39TVuQIDdPNbNnVNgiWGzi_SVl17V-8hetw54nLyI0M"
+
+import json
+import collections
 
 ENTITY_LABELS = ["Component", "Material", "Specification", "Standard", "Entity"]
+
+# Dynamically load from unie_synthetic.json if present
+_json_path = PARTB_DIR / "unie_synthetic.json"
+if _json_path.exists():
+    try:
+        with open(_json_path, 'r', encoding='utf-8') as f:
+            _data = json.load(f)
+        # Extract generic entity labels (ignore relation pairs with '<>' and generic 'match')
+        _all_labels = [
+            item[2] for record in _data 
+            for item in record.get('ner', []) 
+            if '<>' not in item[2] and item[2].lower() != "match"
+        ]
+        _counter = collections.Counter(_all_labels)
+        # Take the top 30 most frequent entity types
+        ENTITY_LABELS = [k for k, v in _counter.most_common(30)]
+    except Exception as e:
+        print(f"Warning: Failed to load labels from JSON: {e}")
 NEO4J_ENTITY_LIMIT = 50
 PROP_RETRIEVE_LIMIT = 40
 SECT_RETRIEVE_LIMIT = 40
@@ -78,7 +107,7 @@ MODE_ORDER = ("fast", "balanced", "deep")
 # LiteLLM model_name must match deploy/litellm_config.yaml entries
 MODE_CONFIG: dict[str, dict] = {
     "fast": {
-        "litellm_model": "gemma3:1b",
+        "litellm_model": "open-mistral-nemo",
         "ollama_model": "gemma3:1b",  # direct fallback
         "qdrant_over_retrieve": int(os.environ.get("RAG_FAST_QDRANT_LIMIT", "40")),
         "final_top_n": int(os.environ.get("RAG_FAST_FINAL_TOP", "8")),
@@ -87,7 +116,7 @@ MODE_CONFIG: dict[str, dict] = {
         "llm_timeout_s": float(os.environ.get("RAG_FAST_LLM_TIMEOUT", "600")),
     },
     "balanced": {
-        "litellm_model": "mistral:7b-instruct",
+        "litellm_model": "mistral-small-latest",
         "ollama_model": "mistral:7b-instruct-q4_K_M",
         "qdrant_over_retrieve": int(os.environ.get("RAG_BAL_QDRANT_LIMIT", "40")),
         "final_top_n": int(os.environ.get("RAG_BAL_FINAL_TOP", "8")),
@@ -96,7 +125,7 @@ MODE_CONFIG: dict[str, dict] = {
         "llm_timeout_s": float(os.environ.get("RAG_BAL_LLM_TIMEOUT", "600")),
     },
     "deep": {
-        "litellm_model": "llama3.1:8b-instruct",
+        "litellm_model": "mistral-large-latest",
         "ollama_model": "llama3.1:8b-instruct-q4_K_M",
         "qdrant_over_retrieve": int(os.environ.get("RAG_DEEP_QDRANT_LIMIT", "48")),
         "final_top_n": int(os.environ.get("RAG_DEEP_FINAL_TOP", "10")),
