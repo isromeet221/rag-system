@@ -5,13 +5,17 @@ import uuid
 from datetime import datetime
 
 from partb.config import MONGO_DB
+from partb.logger import time_it, async_time_it
+
 from partb.db import get_mongo
 
 
+@time_it
 def messages_col():
     return get_mongo()[MONGO_DB]["messages"]
 
 
+@time_it
 def save_message(
     chat_id: str,
     role: str,
@@ -32,6 +36,7 @@ def save_message(
     return doc
 
 
+@time_it
 def get_prior_messages(chat_id: str, n_pairs: int) -> list[dict]:
     """
     Last n_pairs × 2 messages before the current send (oldest first).
@@ -47,6 +52,7 @@ def get_prior_messages(chat_id: str, n_pairs: int) -> list[dict]:
     return [{"role": m["role"], "content": m["content"]} for m in msgs]
 
 
+@time_it
 def get_all_messages(chat_id: str) -> list[dict]:
    
     col = messages_col()

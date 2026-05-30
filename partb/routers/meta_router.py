@@ -18,16 +18,20 @@ from partb.config import  (
     USE_OLLAMA_DIRECT
 )
 from partb.db import get_mongo
+from partb.logger import time_it, async_time_it
+
 from partb.services.pages import count_pages, get_page_text
 
 router = APIRouter(tags=["meta"])
 
 
+@time_it
 def library_col():
     return get_mongo()[MONGO_DB]["library"]
 
 
 @router.get("/library")
+@async_time_it
 async def list_library(user: dict = Depends(verify_token)):
     books = list(
         library_col()
@@ -53,6 +57,7 @@ async def list_library(user: dict = Depends(verify_token)):
 
 
 @router.get("/books/{book_id}/page/{page_number}")
+@async_time_it
 async def get_page(book_id: str, page_number: int, user: dict = Depends(verify_token)):
     book = library_col().find_one({"book_id": book_id, "status": "ready"})
     if not book:
@@ -65,6 +70,7 @@ async def get_page(book_id: str, page_number: int, user: dict = Depends(verify_t
 
 
 @router.get("/health")
+@async_time_it
 async def health():
     status: dict = {}
 
@@ -136,6 +142,7 @@ async def health():
 
 
 @router.get("/models")
+@async_time_it
 async def list_models(_: dict = Depends(verify_token)):
     if USE_OLLAMA_DIRECT:
         try:

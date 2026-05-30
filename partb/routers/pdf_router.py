@@ -15,6 +15,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from partb.auth_jwt import verify_token
+from partb.logger import time_it, async_time_it
+
 from partb.config import PARTA_DATA_DIR
 
 router = APIRouter(prefix="/pdf", tags=["pdf"])
@@ -22,6 +24,7 @@ router = APIRouter(prefix="/pdf", tags=["pdf"])
 PDF_DIR = PARTA_DATA_DIR / "raw"
 
 
+@time_it
 def _pdf_path(book_id: str) -> Path:
     path = PDF_DIR / f"{book_id}.pdf"
     if not path.is_file():
@@ -31,6 +34,7 @@ def _pdf_path(book_id: str) -> Path:
 
 # ── Allow token via query param so <iframe src="..."> works ──────
 # Browsers cannot send Authorization headers for iframe src URLs.
+@async_time_it
 async def verify_token_or_query(
     token: str = Query(None),
     user=Depends(verify_token),
@@ -39,6 +43,7 @@ async def verify_token_or_query(
 
 
 @router.get("/{book_id}/info")
+@async_time_it
 async def pdf_info(book_id: str, user=Depends(verify_token)):
     """Return total page count. Called once when opening the panel."""
     path = _pdf_path(book_id)
@@ -50,6 +55,7 @@ async def pdf_info(book_id: str, user=Depends(verify_token)):
 
 
 @router.get("/{book_id}")
+@async_time_it
 async def serve_pdf(book_id: str, token: str = Query(None)):
     """
     Stream the raw PDF binary to the browser iframe.

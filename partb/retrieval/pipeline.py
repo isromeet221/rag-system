@@ -78,6 +78,8 @@ from partb.config import (
     RERANKER_DIR,
     SECT_RETRIEVE_LIMIT,
 )
+from partb.logger import time_it, async_time_it
+
 from partb.retrieval.prompts import get_system_prompt
 
 logging.getLogger("transformers").setLevel(logging.ERROR)
@@ -95,6 +97,7 @@ _nomic_model = None
 _metadata_cache: dict[str, dict] = {}
 
 
+@time_it
 def get_gliner():
     global _gliner
     if _gliner is None:
@@ -106,6 +109,7 @@ def get_gliner():
     return _gliner
 
 
+@time_it
 def get_neo4j():
     global _neo_driver
     if _neo_driver is None:
@@ -115,6 +119,7 @@ def get_neo4j():
     return _neo_driver
 
 
+@time_it
 def get_reranker():
     global _reranker
     if _reranker is None:
@@ -126,6 +131,7 @@ def get_reranker():
     return _reranker
 
 
+@time_it
 def get_qdrant():
     global _qdrant_cl
     if _qdrant_cl is None:
@@ -135,6 +141,7 @@ def get_qdrant():
     return _qdrant_cl
 
 
+@time_it
 def get_nomic():
     global _nomic_model
     if _nomic_model is None:
@@ -146,6 +153,7 @@ def get_nomic():
     return _nomic_model
 
 
+@time_it
 def warm_models() -> None:
     get_neo4j(); get_gliner(); get_reranker(); get_nomic(); get_qdrant()
 
@@ -154,6 +162,7 @@ def warm_models() -> None:
 # TABLE FORMATTING
 # ─────────────────────────────────────────────────────────────────────────────
 
+@time_it
 def format_table_for_llm(chunk: dict) -> str:
     """
     Converts a table chunk into LLM-readable bullet list format.
@@ -215,6 +224,7 @@ def format_table_for_llm(chunk: dict) -> str:
     return ""
 
 
+@time_it
 def format_specs_block(specs: list[dict]) -> str:
     """Formats Neo4j Spec nodes as a verified-facts block at the top of context."""
     if not specs:
@@ -243,6 +253,7 @@ def format_specs_block(specs: list[dict]) -> str:
 # RETRIEVAL STEPS 1-6
 # ─────────────────────────────────────────────────────────────────────────────
 
+@time_it
 def search_propositions(query: str, book_ids: list[str], limit: int) -> list[dict]:
     from qdrant_client import models as qm
     client    = get_qdrant()
@@ -276,6 +287,7 @@ def search_propositions(query: str, book_ids: list[str], limit: int) -> list[dic
     return results
 
 
+@time_it
 def extract_query_entities(query: str) -> list[str]:
     model = get_gliner()
     try:
@@ -294,6 +306,7 @@ def extract_query_entities(query: str) -> list[str]:
     return terms
 
 
+@time_it
 def neo4j_sections_for_entities(book_ids: list[str], entity_terms: list[str]) -> list[str]:
     if not entity_terms or not book_ids:
         return []
@@ -319,6 +332,7 @@ def neo4j_sections_for_entities(book_ids: list[str], entity_terms: list[str]) ->
         return []
 
 
+@time_it
 def neo4j_specs_for_terms(book_ids: list[str], entity_terms: list[str]) -> list[dict]:
     if not entity_terms or not book_ids:
         return []
@@ -348,6 +362,7 @@ def neo4j_specs_for_terms(book_ids: list[str], entity_terms: list[str]) -> list[
         return []
 
 
+@time_it
 def _parse_payload(pl: dict, pid: str) -> dict:
     """Parses a Qdrant section payload into a standard dict."""
     pr = pl.get("page_range")
@@ -368,6 +383,7 @@ def _parse_payload(pl: dict, pid: str) -> dict:
     }
 
 
+@time_it
 def fetch_sections_by_chunk_ids(chunk_ids: list[str], book_ids: list[str]) -> list[dict]:
     if not chunk_ids:
         return []
@@ -384,6 +400,7 @@ def fetch_sections_by_chunk_ids(chunk_ids: list[str], book_ids: list[str]) -> li
     return results
 
 
+@time_it
 def search_sections_direct(query: str, book_ids: list[str],
                             section_names: list[str], limit: int) -> list[dict]:
     from qdrant_client import models as qm
@@ -411,6 +428,7 @@ def search_sections_direct(query: str, book_ids: list[str],
     return results
 
 
+@time_it
 def merge_candidates(parent_sections: list[dict], direct_sections: list[dict],
                      neo4j_names: list[str]) -> list[dict]:
     by_id: dict[str, dict] = {}
@@ -435,6 +453,7 @@ def merge_candidates(parent_sections: list[dict], direct_sections: list[dict],
     return [s for s in by_id.values() if (s.get("text") or "").strip()]
 
 
+@time_it
 def rerank_candidates(query: str, candidates: list[dict], top_n: int) -> list[dict]:
     if not candidates:
         return []
@@ -460,6 +479,7 @@ def rerank_candidates(query: str, candidates: list[dict], top_n: int) -> list[di
 # STEP 7 — PAGE EXPANSION  ← NEW
 # ─────────────────────────────────────────────────────────────────────────────
 
+@time_it
 def _load_metadata(book_id: str) -> dict | None:
     """
     Loads and caches {book_id}_metadata.json from METADATA_DIR.
@@ -482,6 +502,7 @@ def _load_metadata(book_id: str) -> dict | None:
         return None
 
 
+@time_it
 def load_page_content(book_id: str, page_number: int) -> str | None:
     """
     Returns full_content for a given page from the metadata JSON.
@@ -496,6 +517,7 @@ def load_page_content(book_id: str, page_number: int) -> str | None:
     return (entry.get("full_content") or "").strip() or None
 
 
+@time_it
 def expand_to_pages(top_chunks: list[dict]) -> list[str]:
     """
     Step 7: Expands top ranked chunks to full page content from metadata.
@@ -586,6 +608,7 @@ def expand_to_pages(top_chunks: list[dict]) -> list[str]:
 # CONTEXT BUILDING  ← modified to accept page_blocks
 # ─────────────────────────────────────────────────────────────────────────────
 
+@time_it
 def _sentences(text: str) -> list[str]:
     try:
         import nltk
@@ -598,6 +621,7 @@ def _sentences(text: str) -> list[str]:
         return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
 
 
+@time_it
 def build_context(
     chunks: list[dict],
     query: str,
@@ -725,6 +749,7 @@ def build_context(
 # MAIN RETRIEVAL + STREAMING
 # ─────────────────────────────────────────────────────────────────────────────
 
+@time_it
 def retrieve_bundle(query: str, book_ids: list[str], mode: str) -> dict[str, Any]:
     cfg      = MODE_CONFIG.get(mode, MODE_CONFIG["balanced"])
     prop_lim = cfg.get("prop_retrieve_limit", PROP_RETRIEVE_LIMIT)
@@ -767,6 +792,7 @@ def retrieve_bundle(query: str, book_ids: list[str], mode: str) -> dict[str, Any
             "system_prompt": system_prompt, "mode": mode, "cfg": cfg}
 
 
+@time_it
 def _history_block(history: list[dict]) -> str:
     return "\n\n".join(
         f"{'User' if m.get('role') == 'user' else 'Assistant'}: {m.get('content') or ''}"
@@ -774,6 +800,7 @@ def _history_block(history: list[dict]) -> str:
     )
 
 
+@time_it
 def build_user_message(query: str, context: str, history: list[dict]) -> str:
     """
     Adds an explicit per-message reminder to never reference tables.
@@ -798,6 +825,7 @@ def build_user_message(query: str, context: str, history: list[dict]) -> str:
             f"Question: {query}{reminder}\nAnswer:")
 
 
+@async_time_it
 async def run_rag_stream(
     query: str, book_ids: list[str], mode: str, history: list[dict],
 ) -> AsyncIterator[dict]:

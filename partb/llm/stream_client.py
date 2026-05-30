@@ -6,6 +6,8 @@ from typing import Any, AsyncIterator
 
 import httpx
 
+from partb.logger import time_it, async_time_it
+
 from partb.config import (
     LITELLM_API_KEY,
     LITELLM_BASE_URL,
@@ -15,6 +17,7 @@ from partb.config import (
 )
 
 
+@time_it
 def _prompt_from_messages(messages: list[dict[str, str]]) -> str:
     """Ollama /api/generate expects a single prompt string."""
     parts = []
@@ -30,6 +33,7 @@ def _prompt_from_messages(messages: list[dict[str, str]]) -> str:
     return "\n\n".join(parts)
 
 
+@async_time_it
 async def stream_llm(
     messages: list[dict[str, str]],
     mode: str,
@@ -44,6 +48,7 @@ async def stream_llm(
         yield ev
 
 
+@async_time_it
 async def _stream_litellm(
     messages: list[dict[str, str]],
     mode: str,
@@ -95,6 +100,7 @@ async def _stream_litellm(
             yield {"type": "error", "message": f"LLM stream error: {e}"}
 
 
+@async_time_it
 async def _stream_ollama(
     messages: list[dict[str, str]],
     mode: str,

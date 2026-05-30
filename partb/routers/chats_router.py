@@ -15,6 +15,8 @@ from partb.auth_jwt import verify_token
 from partb.config import MODE_CONFIG, MONGO_DB, MODE_ORDER
 from partb.db import get_mongo
 from partb.retrieval.pipeline import run_rag_stream
+from partb.logger import time_it, async_time_it
+
 from partb.services.messages import get_all_messages,get_prior_messages,save_message
 router = APIRouter(prefix="/chats", tags=["chats"])
 
@@ -31,16 +33,20 @@ class AskBody(BaseModel):
     question: str
     mode: str = "balanced"
 
+@time_it
 def chats_col():
     return get_mongo()[MONGO_DB]["chats"]
 
 
+@time_it
 def _now_iso()-> str:
     return datetime.now(timezone.utc).isoformate()
 
+@time_it
 def _sse(data: dict) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
+@time_it
 def _assert_owner(chat_id: str, user_id: str) -> dict:
     chat = chats_col().find_one({"chat_id": chat_id},{"_id":0})
     if not chat:
@@ -51,6 +57,7 @@ def _assert_owner(chat_id: str, user_id: str) -> dict:
 
 
 @router.post("")
+@async_time_it
 async def create_chat(body: ChatRequest, user: dict = Depends(verify_token)):
     if not body.book_ids:
         raise HTTPException(400, "At least one book must be selected.")
@@ -77,6 +84,7 @@ async def create_chat(body: ChatRequest, user: dict = Depends(verify_token)):
 
 
 @router.get("")
+@time_it
 def list_chats(user: dict = Depends(verify_token)):
     cursor = (
         chats_col() 
@@ -86,10 +94,12 @@ def list_chats(user: dict = Depends(verify_token)):
 
 
 @router.get("/{chat_id}")
+@time_it
 def get_chat(chat_id: str, user: dict = Depends(verify_token)):
     return _assert_owner(chat_id, user["user_id"])
 
 @router.patch("/{chat_id}")
+@time_it
 def patch_chat(chat_id: str, body: ChatPatch, user: dict = Depends(verify_token)):
     _assert_owner(chat_id, user["user_id"])
     updates = {"updated_at": _now_iso()}
@@ -104,6 +114,7 @@ def patch_chat(chat_id: str, body: ChatPatch, user: dict = Depends(verify_token)
 
 
 @router.delete("/{chat_id}")
+@time_it
 def delete_chat(chat_id: str, user: dict = Depends(verify_token)):
     _assert_owner(chat_id, user["user_id"])
     chats_col().delete_one({"chat_id": chat_id})
@@ -111,11 +122,13 @@ def delete_chat(chat_id: str, user: dict = Depends(verify_token)):
     return {"message": "Chat deleted"}
 
 @router.get("/{chat_id}/messages")
+@time_it
 def list_messages(chat_id: str, user: dict = Depends(verify_token)):
     _assert_owner(chat_id, user["user_id"])
     return get_all_messages(chat_id)
 
 @router.post("/{chat_id}/ask")
+@async_time_it
 async def ask(chat_id: str, body: AskBody, user: dict = Depends(verify_token)):
     chat = _assert_owner(chat_id, user["user_id"])
     question = body.question.strip()

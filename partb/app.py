@@ -24,10 +24,13 @@ from partb.db import get_mongo
 from partb.routers.auth_router import router as auth_router
 from partb.routers.chats_router import router as chats_router
 from partb.routers.meta_router import router as meta_router
+from partb.logger import time_it, async_time_it
+
 from partb.routers.pdf_router import router as pdf_router
 
 
 @asynccontextmanager
+@async_time_it
 async def lifespan(app: FastAPI):
      
     if str(PARTA_DIR) not in sys.path:
@@ -79,6 +82,7 @@ app.include_router(meta_router)
 app.include_router(pdf_router)
 
 @app.get("/", response_class=HTMLResponse)
+@async_time_it
 async def serve_frontend():
     html_path = FRONTEND_DIR / "chat.html"
     if html_path.is_file():

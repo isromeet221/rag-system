@@ -1,3 +1,5 @@
+from partb.logger import time_it, async_time_it
+
 """System prompts — aligned with parta/test.py."""
 
 BASE_SYSTEM_PROMPT = (
@@ -30,5 +32,6 @@ MODE_STYLE = {
 }
 
 
+@time_it
 def get_system_prompt(mode: str) -> str:
     return BASE_SYSTEM_PROMPT + MODE_STYLE.get(mode, MODE_STYLE["balanced"])

@@ -56,6 +56,8 @@ NEO4J_USER = "95a8070a"
 NEO4J_PASSWORD = "39TVuQIDdPNbNnVNgiWGzi_SVl17V-8hetw54nLyI0M"
 
 import json
+from partb.logger import time_it, async_time_it
+
 import collections
 
 ENTITY_LABELS = ["Component", "Material", "Specification", "Standard", "Entity"]
@@ -91,6 +93,7 @@ LONG_CHUNK_WORDS = int(os.environ.get("RAG_LONG_CHUNK_WORDS", "450"))
 
 
 # Apply Qdrant/Neo env for processing.* imports (ingest_vectors / ingest_graph)
+@time_it
 def apply_parta_service_env() -> None:
     """Ensure parta modules see DB URLs even if only Part B is started."""
     os.environ.setdefault("RAG_QDRANT_URL", "http://localhost:6333")

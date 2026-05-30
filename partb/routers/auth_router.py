@@ -11,6 +11,8 @@ from pymongo.errors import DuplicateKeyError
 
 from partb.auth_jwt import create_token
 from partb.config import MONGO_DB
+from partb.logger import time_it, async_time_it
+
 from partb.db import get_mongo
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -27,12 +29,14 @@ class LoginBody(BaseModel):
     email: str
     password: str
 
+@time_it
 def users_col():
     col = get_mongo()[MONGO_DB]["users"]
     col.craete_index("email", unique=True)
     return col
 
 @router.post("/signup")
+@time_it
 def signup(body: SignupBody):
     name = body.name.strip()
     email = body.email.strip().lower()
@@ -66,6 +70,7 @@ def signup(body: SignupBody):
 
 
 @router.post("/login")
+@time_it
 def login(body: LoginBody):
     email = body.email.strip().lower()
     password = body.password

@@ -20,21 +20,27 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from partb.logger import time_it, async_time_it
+
 from partb.config import CHECKPOINTS_DIR, METADATA_DIR, PARTA_DATA_DIR
 
 
+@time_it
 def _metadata_path(book_id: str) -> Path:
     return METADATA_DIR / f"{book_id}_metadata.json"
 
 
+@time_it
 def _ready_path(book_id: str) -> Path:
     return CHECKPOINTS_DIR / f"{book_id}_ready.json"
 
 
+@time_it
 def _legacy_ready_path(book_id: str) -> Path:
     return PARTA_DATA_DIR / "metadata" / f"{book_id}_ready.json"
 
 
+@time_it
 def _load_metadata(book_id: str) -> dict | None:
     path = _metadata_path(book_id)
     if not path.is_file():
@@ -45,6 +51,7 @@ def _load_metadata(book_id: str) -> dict | None:
         return None
 
 
+@time_it
 def _load_ready(book_id: str) -> list | None:
     for path in [_ready_path(book_id), _legacy_ready_path(book_id)]:
         if path.is_file():
@@ -56,6 +63,7 @@ def _load_ready(book_id: str) -> list | None:
     return None
 
 
+@time_it
 def get_page_text(book_id: str, page_number: int) -> str | None:
     """
     Returns full readable content for a given page.
@@ -104,6 +112,7 @@ def get_page_text(book_id: str, page_number: int) -> str | None:
     return "\n\n---\n\n".join(blocks) if blocks else None
 
 
+@time_it
 def get_page_info(book_id: str, page_number: int) -> dict | None:
     """
     Returns full metadata entry for a page: page_number, sections, full_content.
@@ -122,6 +131,7 @@ def get_page_info(book_id: str, page_number: int) -> dict | None:
     }
 
 
+@time_it
 def get_total_pages(book_id: str) -> int:
     """Total indexed page count. O(1) from __meta__ entry."""
     meta = _load_metadata(book_id)
@@ -133,6 +143,7 @@ def get_total_pages(book_id: str) -> int:
     return count_pages(book_id)
 
 
+@time_it
 def get_sorted_page_numbers(book_id: str) -> list[int]:
     """
     All indexed page numbers in sorted order.
@@ -170,6 +181,7 @@ def get_sorted_page_numbers(book_id: str) -> list[int]:
     return sorted(pages)
 
 
+@time_it
 def count_pages(book_id: str) -> int:
     """Backward-compatible page count for meta_router.py."""
     meta = _load_metadata(book_id)
