@@ -14,15 +14,18 @@ def inject(filepath):
     has_injected = False
     
     for i, line in enumerate(lines):
-        if line.startswith('def '):
+        stripped = line.lstrip()
+        if stripped.startswith('def '):
             if i > 0 and lines[i-1].strip().startswith('@'):
                 # insert before the existing decorator
                 pass # actually it's easier to just put it after existing decorators
-            out.append('@time_it')
+            indent = line[:len(line) - len(stripped)]
+            out.append(f'{indent}@time_it')
             out.append(line)
             has_injected = True
-        elif line.startswith('async def '):
-            out.append('@async_time_it')
+        elif stripped.startswith('async def '):
+            indent = line[:len(line) - len(stripped)]
+            out.append(f'{indent}@async_time_it')
             out.append(line)
             has_injected = True
         else:
