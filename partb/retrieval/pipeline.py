@@ -155,7 +155,7 @@ def get_nomic():
 
 @time_it
 def warm_models() -> None:
-    get_neo4j(); get_gliner(); get_reranker(); get_nomic(); get_qdrant()
+    get_neo4j(); get_qdrant()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
