@@ -21,12 +21,13 @@ if not logger.handlers:
     fh.setFormatter(formatter)
     logger.addHandler(fh)
     
-    sh = logging.StreamHandler()
+    import sys
+    sh = logging.StreamHandler(sys.stdout)
     sh.setFormatter(formatter)
     logger.addHandler(sh)
     
-    # Optional: prevent logs from propagating up to uvicorn's root logger and printing twice
-    logger.propagate = False
+    # Ensure logs show up in terminal by propagating to root logger
+    logger.propagate = True
 
 def time_it(func: Callable) -> Callable:
     """Decorator to measure execution time of a synchronous function."""
