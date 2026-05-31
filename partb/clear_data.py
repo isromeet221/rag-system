@@ -15,7 +15,7 @@ def clear_neo4j():
     try:
         from neo4j import GraphDatabase
         print("Clearing Neo4j...")
-        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD), max_connection_lifetime=200, keep_alive=True)
         with driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n")
         driver.close()

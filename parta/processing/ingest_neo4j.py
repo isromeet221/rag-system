@@ -863,7 +863,7 @@ def run_neo4j_ingestion(
     # ── Connect to Neo4j ──────────────────────────────────────────────────────
     print(f"\n[NEO4J] Connecting to {NEO4J_URI}...")
     try:
-        driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
+        driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH, max_connection_lifetime=200, keep_alive=True)
         driver.verify_connectivity()
         print("[NEO4J] ✅ Neo4j connected.")
     except Exception as e:

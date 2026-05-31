@@ -114,7 +114,7 @@ def get_neo4j():
     global _neo_driver
     if _neo_driver is None:
         from neo4j import GraphDatabase
-        _neo_driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+        _neo_driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD), max_connection_lifetime=200, keep_alive=True)
         _neo_driver.verify_connectivity()
     return _neo_driver
 
