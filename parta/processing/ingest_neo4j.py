@@ -54,7 +54,8 @@ Called by pipeline_controller.py:
 """
 
 import re
-from parta.logger import time_it, async_time_it
+import concurrent.futures
+from parta.logger import time_it, async_time_it, logger
 import json
 import time
 import uuid
@@ -74,6 +75,10 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # ─────────────────────────────────────────────────────────────────────────────
 NEO4J_URI  = "neo4j+s://95a8070a.databases.neo4j.io"
 NEO4J_AUTH = ("95a8070a", "39TVuQIDdPNbNnVNgiWGzi_SVl17V-8hetw54nLyI0M")
+
+# Worker count for knowledge-graph chunk processing.
+# Keep 1 if GLiNER is unstable on your CPU; increase to 2/4 for faster graph injection.
+NEO4J_WORKERS = 1
 
 import json
 import collections
@@ -703,6 +708,40 @@ def _write_table_nodes(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @time_it
+def _neo4j_chunk_worker(args) -> Dict:
+    """Worker unit for graph extraction. Does CPU/model work only; Neo4j writes stay in main thread."""
+    idx, chunk, book_id, gliner_model, sent_tokenize = args
+    content = chunk.get("content", "").strip()
+    chunk_type = chunk.get("type", "text")
+    section_path = chunk.get("section_path", [])
+    section_name = section_path[-1] if section_path else "Unknown"
+    out = {"idx": idx, "chunk": chunk, "section_name": section_name, "specs": [], "entities": [], "pairs": []}
+    if not content:
+        return out
+
+    if chunk_type == "text":
+        out["specs"] = _extract_specifications(content)
+
+    out["entities"] = _run_gliner_on_text(gliner_model, content)
+
+    if chunk_type == "text":
+        try:
+            sentences = sent_tokenize(content)
+        except Exception:
+            sentences = _regex_sent_tokenize(content)
+        for sentence in sentences:
+            if len(sentence) < MIN_SENTENCE_CHARS:
+                continue
+            sent_entities = _run_gliner_on_text(gliner_model, sentence)
+            sent_names = [e["name"] for e in sent_entities]
+            for i in range(len(sent_names)):
+                for j in range(i + 1, len(sent_names)):
+                    a, b = sent_names[i], sent_names[j]
+                    out["pairs"].append((min(a, b), max(a, b), section_name))
+    return out
+
+
+@time_it
 def _process_chunks(
     session,
     chunks:       List[dict],
@@ -712,99 +751,60 @@ def _process_chunks(
     progress_callback,
 ) -> Dict:
     """
-    Pass 2: processes each chunk for Layers 2, 3, 4, 5.
-    Accumulates co-occurrence pairs in memory.
-    Returns stats dict.
+    Pass 2: worker-style chunk processing for Layers 2, 3, 4, 5.
+    Workers extract specs/entities/co-occurrence; main thread writes to Neo4j
+    so the Neo4j session is never shared unsafely.
     """
-    total          = len(chunks)
-    entities_seen  = 0
-    specs_seen     = 0
-    tables_seen    = 0
+    total = len(chunks)
+    entities_seen = specs_seen = tables_seen = 0
+    cooccurrence: Dict[Tuple, Dict] = defaultdict(lambda: {"count": 0, "sections": set()})
+    worker_count = max(1, int(NEO4J_WORKERS))
+    logger.info("[NEO4J] Starting graph worker pool | workers=%s | chunks=%s | book=%s", worker_count, total, book_id)
 
-    # Layer 4 accumulator
-    # key: (name_a, name_b) sorted tuple
-    # val: {count: int, sections: set}
-    cooccurrence: Dict[Tuple, Dict] = defaultdict(
-        lambda: {"count": 0, "sections": set()}
-    )
-
-    for idx, chunk in enumerate(chunks):
-        content      = chunk.get("content", "").strip()
-        chunk_type   = chunk.get("type", "text")
-        section_path = chunk.get("section_path", [])
-        section_name = section_path[-1] if section_path else "Unknown"
-        book_id_c    = chunk.get("book_id", book_id)
-
-        if not content:
-            continue
-
-        # ── Layer 2 — Specifications (regex) ──────────────────────────────────
-        if chunk_type == "text":
-            specs = _extract_specifications(content)
-            if specs:
-                _write_specifications(session, specs, section_name, book_id)
-                specs_seen += len(specs)
-
-        # ── Layer 3 — Entity-Section links (GLiNER on full chunk) ─────────────
-        entities = _run_gliner_on_text(gliner_model, content)
-        if entities:
-            _write_entity_section_links(
-                session, entities, section_name, book_id
-            )
-            entities_seen += len(entities)
-
-        # ── Layer 4 — Sentence co-occurrence (GLiNER per sentence) ────────────
-        if chunk_type == "text" and content:
-            try:
-                sentences = sent_tokenize(content)
-            except Exception:
-                sentences = _regex_sent_tokenize(content)
-
-            for sentence in sentences:
-                if len(sentence) < MIN_SENTENCE_CHARS:
-                    continue
-
-                sent_entities = _run_gliner_on_text(gliner_model, sentence)
-                sent_names    = [e["name"] for e in sent_entities]
-
-                # Record all pairs in this sentence
-                for i in range(len(sent_names)):
-                    for j in range(i + 1, len(sent_names)):
-                        a = sent_names[i]
-                        b = sent_names[j]
-                        # Always store with smaller name first (canonical order)
-                        key = (min(a, b), max(a, b))
-                        cooccurrence[key]["count"] += 1
-                        cooccurrence[key]["sections"].add(section_name)
-
-        # ── Layer 5 — Table nodes ─────────────────────────────────────────────
-        if chunk_type == "table":
+    def handle_result(result: Dict):
+        nonlocal entities_seen, specs_seen, tables_seen
+        chunk = result["chunk"]
+        section_name = result["section_name"]
+        if result["specs"]:
+            _write_specifications(session, result["specs"], section_name, book_id)
+            specs_seen += len(result["specs"])
+        if result["entities"]:
+            _write_entity_section_links(session, result["entities"], section_name, book_id)
+            entities_seen += len(result["entities"])
+        for a, b, sec in result["pairs"]:
+            cooccurrence[(a, b)]["count"] += 1
+            cooccurrence[(a, b)]["sections"].add(sec)
+        if chunk.get("type") == "table" and chunk.get("content", "").strip():
             _write_table_nodes(session, chunk, book_id)
             tables_seen += 1
 
-        # Progress update every 25 chunks
-        if (idx + 1) % 25 == 0 or (idx + 1) == total:
-            pct = 82 + int(((idx + 1) / max(total, 1)) * 13)
-            if progress_callback:
-                progress_callback(
-                    percent=min(pct, 94),
-                    stage="Graph Ingestion",
-                    message=(
-                        f"Processing chunks: {idx+1}/{total} | "
-                        f"Entities: {entities_seen} | "
-                        f"Specs: {specs_seen} | "
-                        f"Tables: {tables_seen}"
-                    ),
-                    extra={
-                        "chunks_done":  idx + 1,
-                        "total_chunks": total,
-                    },
-                )
-            print(f"[NEO4J] {idx+1}/{total} chunks | "
-                  f"entities: {entities_seen} | "
-                  f"specs: {specs_seen} | "
-                  f"tables: {tables_seen}")
+    def report(done: int):
+        pct = 82 + int((done / max(total, 1)) * 13)
+        msg = f"Graph workers processed: {done}/{total} | Entities: {entities_seen} | Specs: {specs_seen} | Tables: {tables_seen}"
+        if progress_callback:
+            progress_callback(percent=min(pct, 94), stage="Graph Ingestion", message=msg, extra={"chunks_done": done, "total_chunks": total, "workers": worker_count})
+        logger.info("[NEO4J] %s", msg)
 
+    args_iter = [(idx, chunk, book_id, gliner_model, sent_tokenize) for idx, chunk in enumerate(chunks)]
+    done = 0
+    if worker_count == 1:
+        for args in args_iter:
+            handle_result(_neo4j_chunk_worker(args))
+            done += 1
+            if done % 25 == 0 or done == total:
+                report(done)
+    else:
+        # Thread workers keep one shared loaded model in memory. If your GLiNER build is not
+        # thread-safe, set RAG_NEO4J_WORKERS=1.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="neo4j-kg-worker") as ex:
+            futures = [ex.submit(_neo4j_chunk_worker, args) for args in args_iter]
+            for fut in concurrent.futures.as_completed(futures):
+                handle_result(fut.result())
+                done += 1
+                if done % 25 == 0 or done == total:
+                    report(done)
+
+    logger.info("[NEO4J] Graph worker pool complete | chunks=%s | entities=%s | specs=%s | tables=%s | cooc=%s", total, entities_seen, specs_seen, tables_seen, len(cooccurrence))
     return {
         "entities_written":     entities_seen,
         "specs_written":        specs_seen,
@@ -861,11 +861,13 @@ def run_neo4j_ingestion(
         )
 
     # ── Connect to Neo4j ──────────────────────────────────────────────────────
+    logger.info("[NEO4J] Starting graph ingestion | book=%s | ready_path=%s", book_id, ready_path)
     print(f"\n[NEO4J] Connecting to {NEO4J_URI}...")
     try:
         driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH, max_connection_lifetime=200, keep_alive=True)
         driver.verify_connectivity()
         print("[NEO4J] ✅ Neo4j connected.")
+        logger.info("[NEO4J] Neo4j connected | uri=%s", NEO4J_URI)
     except Exception as e:
         raise RuntimeError(
             f"[NEO4J] Cannot connect to Neo4j at {NEO4J_URI}.\n"
@@ -897,6 +899,7 @@ def run_neo4j_ingestion(
     print(f"[NEO4J] Book: '{book_title}'")
     print(f"[NEO4J] {len(chunks)} chunks — "
           f"{len(text_chunks)} text, {len(table_chunks)} tables")
+    logger.info("[NEO4J] Loaded chunks | book=%s | total=%s | text=%s | tables=%s", book_id, len(chunks), len(text_chunks), len(table_chunks))
 
     t_start = time.perf_counter()
 
@@ -958,6 +961,7 @@ def run_neo4j_ingestion(
 
     with open(log_path, "w", encoding="utf-8") as f:
         json.dump(log, f, indent=2)
+    logger.info("[NEO4J] Wrote graph ingestion log | path=%s", log_path)
 
     # ── Final summary ─────────────────────────────────────────────────────────
     print(f"\n[NEO4J] ═══ Graph Ingestion Complete ═══")
@@ -967,6 +971,7 @@ def run_neo4j_ingestion(
     print(f"         Tables    : {stats['tables_written']}")
     print(f"         Co-occurs : {cooc_ct}")
     print(f"         Time      : {elapsed:.1f}s")
+    logger.info("[NEO4J] Graph ingestion complete | book=%s | sections=%s | entities=%s | specs=%s | tables=%s | cooc=%s | elapsed=%.1fs", book_id, log['sections_written'], stats['entities_written'], stats['specs_written'], stats['tables_written'], cooc_ct, elapsed)
 
     if progress_callback:
         progress_callback(

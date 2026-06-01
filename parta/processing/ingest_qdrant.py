@@ -60,7 +60,8 @@ Called by pipeline_controller.py:
 """
 
 import json
-from parta.logger import time_it, async_time_it
+import concurrent.futures
+from parta.logger import time_it, async_time_it, logger
 import time
 import uuid
 import logging
@@ -78,6 +79,10 @@ COLLECTION_PROPS     = "RAG_PROPOSITIons"
 COLLECTION_SECTIONS  = "RAG_sections"
 EMBEDDING_DIM        = 768             # Nomic embed-text-v1.5 output size
 BATCH_SIZE           = 64              # points per upsert call
+
+# Worker count for vector ingestion batches.
+# Keep 1 for maximum stability; increase to 2/4 if your embedding model/client are stable.
+QDRANT_WORKERS       = 1
 
 # Nomic prefix — required for correct embedding behaviour
 NOMIC_QUERY_PREFIX   = "search_document: "
@@ -208,6 +213,35 @@ def _embed_batch(model, texts: List[str]) -> List[List[float]]:
     return [v.tolist() for v in vectors]
 
 
+@time_it
+def _embed_batches_with_workers(model, batches: List[List[str]]) -> List[List[List[float]]]:
+    """Worker-style embedding for prepared batches. Order is preserved."""
+    worker_count = max(1, int(QDRANT_WORKERS))
+    if worker_count == 1 or len(batches) <= 1:
+        return [_embed_batch(model, batch) for batch in batches]
+    logger.info("[QDRANT] Starting embedding worker pool | workers=%s | batches=%s", worker_count, len(batches))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="qdrant-vector-worker") as ex:
+        return list(ex.map(lambda b: _embed_batch(model, b), batches))
+
+
+@time_it
+def _upsert_prepared_batches(client, collection_name: str, prepared_batches: List[tuple], model) -> int:
+    """Embeds prepared text/meta batches using workers, then upserts to Qdrant."""
+    from qdrant_client import models as qm
+    if not prepared_batches:
+        return 0
+    text_batches = [b[0] for b in prepared_batches]
+    meta_batches = [b[1] for b in prepared_batches]
+    vector_batches = _embed_batches_with_workers(model, text_batches)
+    total = 0
+    for vectors, metas in zip(vector_batches, meta_batches):
+        points = [qm.PointStruct(id=m["point_id"], vector=v, payload=m["payload"]) for v, m in zip(vectors, metas)]
+        client.upsert(collection_name=collection_name, points=points)
+        total += len(points)
+    logger.info("[QDRANT] Upserted vectors | collection=%s | points=%s", collection_name, total)
+    return total
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # COLLECTION 1 — PROPOSITIONS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -228,26 +262,15 @@ def _ingest_propositions(
     Returns:
         (points_upserted: int, items_done: int)
     """
-    from qdrant_client import models as qm
-
     points_upserted = 0
     batch_texts  = []
     batch_meta   = []
+    prepared_batches = []
 
     def _flush(texts, metas):
-        nonlocal points_upserted
         if not texts:
             return
-        vectors = _embed_batch(model, texts)
-        points  = []
-        for vec, meta in zip(vectors, metas):
-            points.append(qm.PointStruct(
-                id      = meta["point_id"],
-                vector  = vec,
-                payload = meta["payload"],
-            ))
-        client.upsert(collection_name=COLLECTION_PROPS, points=points)
-        points_upserted += len(points)
+        prepared_batches.append((list(texts), list(metas)))
 
     for prop in propositions:
         text = prop.get("text", "").strip()
@@ -291,6 +314,7 @@ def _ingest_propositions(
 
     # Flush remainder
     _flush(batch_texts, batch_meta)
+    points_upserted = _upsert_prepared_batches(client, COLLECTION_PROPS, prepared_batches, model)
     return points_upserted, items_done
 
 
@@ -318,26 +342,15 @@ def _ingest_sections(
     Returns:
         (points_upserted: int, items_done: int)
     """
-    from qdrant_client import models as qm
-
     points_upserted = 0
     batch_texts = []
     batch_meta  = []
+    prepared_batches = []
 
     def _flush(texts, metas):
-        nonlocal points_upserted
         if not texts:
             return
-        vectors = _embed_batch(model, texts)
-        points  = []
-        for vec, meta in zip(vectors, metas):
-            points.append(qm.PointStruct(
-                id      = meta["point_id"],
-                vector  = vec,
-                payload = meta["payload"],
-            ))
-        client.upsert(collection_name=COLLECTION_SECTIONS, points=points)
-        points_upserted += len(points)
+        prepared_batches.append((list(texts), list(metas)))
 
     for chunk in chunks:
         chunk_type = chunk.get("type", "text")
@@ -393,6 +406,7 @@ def _ingest_sections(
                 )
 
     _flush(batch_texts, batch_meta)
+    points_upserted = _upsert_prepared_batches(client, COLLECTION_SECTIONS, prepared_batches, model)
     return points_upserted, items_done
 
 
@@ -543,6 +557,7 @@ def run_qdrant_ingestion(
 
     print(f"\n[QDRANT] Starting dual-collection ingestion for '{book_id}'")
     print(f"[QDRANT] {len(propositions)} propositions | {len(chunks)} sections")
+    logger.info("[QDRANT] Starting vector ingestion | book=%s | workers=%s | propositions=%s | sections=%s", book_id, QDRANT_WORKERS, len(propositions), len(chunks))
 
     t_start    = time.perf_counter()
     items_done = 0

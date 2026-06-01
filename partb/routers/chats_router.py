@@ -4,6 +4,7 @@ partb/router/chats_router.py"""
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from datetime import datetime,timezone
 from typing import Any
@@ -16,7 +17,7 @@ from partb.auth_jwt import verify_token
 from partb.config import MODE_CONFIG, MONGO_DB, MODE_ORDER
 from partb.db import get_mongo
 from partb.retrieval.pipeline import run_rag_stream
-from partb.logger import time_it, async_time_it
+from partb.logger import time_it, async_time_it, logger
 
 from partb.services.messages import get_all_messages,get_prior_messages,save_message
 router = APIRouter(prefix="/chats", tags=["chats"])
@@ -164,6 +165,7 @@ async def ask(chat_id: str, body: AskBody, user: dict = Depends(verify_token)):
     mode = body.mode if body.mode in MODE_ORDER else chat.get("default_mode", "balanced")
     cfg = MODE_CONFIG[mode]
     history = get_prior_messages(chat_id, cfg["history_pairs"])
+    logger.info("[CHAT] Ask received | chat_id=%s | user_id=%s | mode=%s | books=%s | question_chars=%s | history=%s", chat_id, user.get("user_id"), mode, chat.get("book_ids"), len(question), len(history))
 
     save_message(
         chat_id, "user", question, mode, [])
@@ -183,6 +185,8 @@ async def ask(chat_id: str, body: AskBody, user: dict = Depends(verify_token)):
     async def event_stream():
         full_answer = ""
         sources_out: list = []
+        token_events = 0
+        t0 = time.perf_counter()
         try:
             async for event in run_rag_stream(
                 query=question,
@@ -191,8 +195,13 @@ async def ask(chat_id: str, body: AskBody, user: dict = Depends(verify_token)):
                 history=history,
             ):
                 yield _sse(event)
+                if event.get("type") == "status":
+                    logger.info("[CHAT] RAG status | chat_id=%s | message=%s", chat_id, event.get("message"))
                 if event.get("type") == "token":
+                    token_events += 1
                     full_answer += event.get("content", "")
+                    if token_events == 1:
+                        logger.info("[CHAT] First answer token | chat_id=%s | elapsed=%.2fs", chat_id, time.perf_counter() - t0)
                 if event.get("type") == "done":
                     sources_out = event.get("sources") or []
                     final_text = (event.get("full_text") or "").strip() or full_answer
@@ -200,11 +209,13 @@ async def ask(chat_id: str, body: AskBody, user: dict = Depends(verify_token)):
                         save_message(
                             chat_id,"assistant",final_text,mode,sources_out,
                         )
+                    logger.info("[CHAT] Answer complete | chat_id=%s | mode=%s | answer_chars=%s | token_events=%s | sources=%s | elapsed=%.2fs", chat_id, mode, len(final_text), token_events, len(sources_out), time.perf_counter() - t0)
                     ccol.update_one(
                         {"chat_id": chat_id},
                         {"$inc": {"message_count": 1}, "$set": {"updated_at": datetime.utcnow()}},
                     )
         except Exception as e:
+            logger.exception("[CHAT] Ask stream failed | chat_id=%s", chat_id)
             yield _sse({"type": "error", "message": str(e)})
 
     return StreamingResponse(

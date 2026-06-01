@@ -276,6 +276,15 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   flex: 1; display: none; align-items: center; justify-content: center;
   gap: 10px; color: #475569; font-size: 13px;
 }
+#reference-highlight-box {
+  display: none; margin: 12px 14px 0; padding: 12px 14px;
+  background: #1e3a5f30; border: 1px solid #3b82f660; border-radius: 10px;
+  color: #cbd5e1; font-size: 12px; line-height: 1.55; text-align: left;
+}
+#reference-highlight-box .ref-title { color: #93c5fd; font-weight: 700; margin-bottom: 6px; }
+#reference-highlight-box mark { background: #facc15; color: #111827; padding: 0 2px; border-radius: 2px; }
+#pdf-canvas-wrapper.reference-flash { outline: 3px solid #facc15; outline-offset: -10px; animation: refPulse 1.2s ease-in-out 2; }
+@keyframes refPulse { 0%,100% { box-shadow: none; } 50% { box-shadow: inset 0 0 0 9999px rgba(250,204,21,.10); } }
 
 
 
@@ -527,6 +536,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
       <div id="book-panel-content" style="background: #0f1117; overflow: auto; position: relative;">
         <div id="pdf-placeholder">Click a source chip below an answer to view the PDF page.</div>
         <div id="pdf-loading"><div class="spinner"></div> Loading...</div>
+        <div id="reference-highlight-box"></div>
         <div id="pdf-canvas-wrapper" style="display: none; padding: 20px; text-align: center; min-height: 100%;">
            <canvas id ="pdf-canvas" style= "max-width: 100%; box-shadow: 0 8px 24px rgba(0,0,0,0.5); border-radius: 4px;"></canvas>
        </div>
@@ -935,8 +945,9 @@ function buildSourceChips(sources) {
 	 const page = pr[0] ? `p.${pr[0]}${pr[1] && pr[1]!==pr[0] ? '-' + pr[1] : ''}` : '';
 	 const sec = (s.section_path || []).slice(-1)[0] || s.book_id || '';
 	 const score = s.rerank_score ? ` .score:${s.rerank_score}` : '';
-	 return `<span class="source-chip"  data-book="${escHtml(s.book_id||'')}" data-page="${pr[0]||1}"
-	     onclick="openBookPanel('${escHtml(s.book_id||'')}',${pr[0]||1})"
+     const safeSource = escHtml(JSON.stringify(s || {}));
+	 return `<span class="source-chip" data-book="${escHtml(s.book_id||'')}" data-page="${pr[0]||1}" data-source="${safeSource}"
+	     onclick="openBookPanelFromChip(this)"
 	     title="${escHtml(s.book_id||'')} ${score}">
 	     📄 ${page ? page + ' . ' : ''}${escHtml(sec.substring(0,28))}
 	</span>`;
@@ -1117,14 +1128,19 @@ async function renderPage(num) {
   }
 }
 
-async function openBookPanel(bookId,pageNumber,msgId) {
+function openBookPanelFromChip(chip) {
+  const bookId = chip.dataset.book || '';
+  const pageNumber = parseInt(chip.dataset.page || '1', 10);
+  let source = {};
+  try { source = JSON.parse(chip.dataset.source || '{}'); } catch(e) {}
   document.querySelectorAll('.source-chip').forEach(c => c.classList.remove('active'));
-  if (msgId) {
-    document.querySelectorAll(`#src-${msgId} .source-chip`).forEach(c => {
-      if(c.textContent.includes(`p.${pageNumber}`) || c.textContent.includes(`Pg ${pageNumber}`)) c.classList.add('active');
-    });
-  }
+  chip.classList.add('active');
+  openBookPanel(bookId, pageNumber, source);
+}
 
+async function openBookPanel(bookId,pageNumber,source = {}) {
+  // Do not auto-select every chip with the same book/page.
+  // openBookPanelFromChip() already marks only the exact clicked chip active.
   const panel = document.getElementById('book-panel');
   panel.classList.add('open');
   document.getElementById('book-panel-title').textContent = bookId;
@@ -1135,6 +1151,7 @@ async function openBookPanel(bookId,pageNumber,msgId) {
     bookViewer.pageNumber = safePageNum;
      _pdfUpdateNav();
      renderPage(safePageNum);
+     showReferenceHighlight(bookId, safePageNum, source);
      return;
    }
    document.getElementById('pdf-placeholder').style.display = 'none'; 
@@ -1155,6 +1172,7 @@ async function openBookPanel(bookId,pageNumber,msgId) {
 
      _pdfUpdateNav();
      renderPage(bookViewer.pageNumber);
+     showReferenceHighlight(bookId, safePageNum, source);
     } catch(error) {
       document.getElementById('pdf-loading').style.display = 'none'; 
       document.getElementById('pdf-placeholder').style.display = 'flex'; 
@@ -1163,6 +1181,34 @@ async function openBookPanel(bookId,pageNumber,msgId) {
 
      }
 } 
+
+async function showReferenceHighlight(bookId, pageNumber, source = {}) {
+  const box = document.getElementById('reference-highlight-box');
+  const wrapper = document.getElementById('pdf-canvas-wrapper');
+  if (!box) return;
+  const section = (source.section_path || []).join(' > ');
+  const chunkId = source.chunk_id ? `Chunk: ${source.chunk_id}` : '';
+  box.style.display = 'block';
+  box.innerHTML = `<div class="ref-title">Highlighted reference used for this answer</div><div style="color:#64748b">Loading referenced page text...</div>`;
+  if (wrapper) {
+    wrapper.classList.remove('reference-flash');
+    void wrapper.offsetWidth;
+    wrapper.classList.add('reference-flash');
+  }
+  try {
+    const res = await apiFetch(`/books/${encodeURIComponent(bookId)}/page/${pageNumber}`);
+    const data = res ? await res.json() : {};
+    const text = (source.text || source.linearized_text || data.text || '').trim();
+    const clipped = text.length > 1800 ? text.slice(0, 1800) + '…' : text;
+    box.innerHTML = `
+      <div class="ref-title">Referenced chunk highlighted — page ${pageNumber}</div>
+      ${section ? `<div style="color:#94a3b8;margin-bottom:6px">${escHtml(section)}</div>` : ''}
+      ${chunkId ? `<div style="color:#64748b;margin-bottom:6px">${escHtml(chunkId)}</div>` : ''}
+      <div><mark>${escHtml(clipped || 'This source points to this PDF page.')}</mark></div>`;
+  } catch(e) {
+    box.innerHTML = `<div class="ref-title">Referenced chunk highlighted — page ${pageNumber}</div><div><mark>This source points to this PDF page.</mark></div>`;
+  }
+}
 
 function pdfPrev() {
   if (bookViewer.pageNumber<=1) return;
@@ -1203,6 +1249,8 @@ function closeBookPanel() {
   }
 
   document.getElementById('pdf-canvas-wrapper').style.display = 'none'; 
+  const refBox = document.getElementById('reference-highlight-box');
+  if (refBox) { refBox.style.display = 'none'; refBox.innerHTML = ''; }
   document.getElementById('pdf-placeholder').style.display = 'flex'; 
   document.getElementById('pdf-placeholder').textContent= 'Click a sourcr chip below an answer to view the PDF page.';
   bookViewer = { bookId: null, pageNumber:1, totalPages:0 };
