@@ -283,7 +283,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 }
 #reference-highlight-box .ref-title { color: #93c5fd; font-weight: 700; margin-bottom: 6px; }
 #reference-highlight-box mark { background: #facc15; color: #111827; padding: 0 2px; border-radius: 2px; }
-#pdf-canvas-wrapper.reference-flash { outline: 3px solid #facc15; outline-offset: -10px; animation: refPulse 1.2s ease-in-out 2; }
+#pdf-canvas-wrapper.reference-flash { animation: refPulse 1.2s ease-in-out 2; }
 @keyframes refPulse { 0%,100% { box-shadow: none; } 50% { box-shadow: inset 0 0 0 9999px rgba(250,204,21,.10); } }
 
 
@@ -538,7 +538,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
         <div id="pdf-placeholder">Click a source chip below an answer to view the PDF page.</div>
         <div id="pdf-loading"><div class="spinner"></div> Loading...</div>
         <div id="reference-highlight-box"></div>
-        <div id="pdf-canvas-wrapper" style="display: none; padding: 20px; text-align: center; min-height: 100%;">
+        <div id="pdf-canvas-wrapper" style="display: none; padding: 8px; text-align: center; min-height: 100%;">
            <canvas id ="pdf-canvas" style= "max-width: 100%; box-shadow: 0 8px 24px rgba(0,0,0,0.5); border-radius: 4px;"></canvas>
        </div>
      </div>
@@ -942,18 +942,55 @@ function appendMessage(role, content, sources, mode, animate = true) {
 function buildSourceChips(sources) {
   if (!sources || !sources.length) return '';
   const chips = sources.map((s,i) => {
-	 const pr = s.page_range || [0,0];
-	 const page = pr[0] ? `p.${pr[0]}${pr[1] && pr[1]!==pr[0] ? '-' + pr[1] : ''}` : '';
+	 const realPage = _extractPageFromSource(s);
 	 const sec = (s.section_path || []).slice(-1)[0] || s.book_id || '';
 	 const score = s.rerank_score ? ` .score:${s.rerank_score}` : '';
      const safeSource = escHtml(JSON.stringify(s || {}));
-	 return `<span class="source-chip" data-book="${escHtml(s.book_id||'')}" data-page="${pr[0]||1}" data-source="${safeSource}"
+	 return `<span class="source-chip" data-book="${escHtml(s.book_id||'')}" data-page="${realPage}" data-source="${safeSource}"
 	     onclick="openBookPanelFromChip(this)"
-	     title="${escHtml(s.book_id||'')} ${score}">
-	     📄 ${page ? page + ' . ' : ''}${escHtml(sec.substring(0,28))}
+	     title="${escHtml(s.book_id||'')} p.${realPage} ${score}">
+	     📄 p.${realPage} . ${escHtml(sec.substring(0,28))}
 	</span>`;
    }).join('');
    return`<div class="sources-row">${chips}</div>`;
+}
+
+/**
+ * Extract the best page number from a source object.
+ * Priority:
+ *   1. section_path entries matching "Page N" (the real page from extraction)
+ *   2. page_range (often broken — [1,1] or {start:1,end:1})
+ *   3. Default to 1
+ */
+function _extractPageFromSource(source) {
+  // 1. Try section_path — look for "Page N" pattern
+  const sp = source.section_path || [];
+  for (let i = sp.length - 1; i >= 0; i--) {
+    const m = String(sp[i]).match(/^Page\s+(\d+)$/i);
+    if (m) return parseInt(m[1], 10);
+  }
+  // 2. Try page_range
+  const pr = _parsePageRange(source.page_range);
+  if (pr[0] > 1) return pr[0];  // only trust if > 1 (1 is the broken default)
+  // 3. Default
+  return pr[0] || 1;
+}
+
+/** Normalize page_range from any shape (dict, array, number, null) to [start, end] */
+function _parsePageRange(pr) {
+  if (!pr) return [0, 0];
+  if (Array.isArray(pr)) {
+    const s = parseInt(pr[0], 10) || 0;
+    const e = parseInt(pr[1], 10) || s;
+    return [s, e];
+  }
+  if (typeof pr === 'object') {
+    const s = parseInt(pr.start || pr[0] || 0, 10) || 0;
+    const e = parseInt(pr.end || pr[1] || s, 10) || s;
+    return [s, e];
+  }
+  if (typeof pr === 'number') return [pr, pr];
+  return [0, 0];
 }
  
 
@@ -1104,27 +1141,39 @@ function _pdfUpdateNav() {
 }
 async function renderPage(num) {
   if (!currentPdfDoc) return;
+
+  // Clamp page number to valid range
+  const totalPages = currentPdfDoc.numPages || bookViewer.totalPages || 1;
+  if (num < 1) num = 1;
+  if (num > totalPages) num = totalPages;
+
   if (isPageRendering) {
     pageNumPending = num;
     return;
-   }
+  }
   isPageRendering = true;
+
+  // Remove any existing text highlight overlay when rendering a new page
+  const existingOverlay = document.getElementById('pdf-highlight-overlay');
+  if (existingOverlay) existingOverlay.remove();
+
   try {
-    const page     = await currentPdfDoc.getPage(num);
+    const page = await currentPdfDoc.getPage(num);
     const canvas = document.getElementById('pdf-canvas');
-    const ctx      = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d');
     const viewport = page.getViewport({ scale: 1.5 });
-    canvas.height  = viewport.height;
-    canvas.width   = viewport.width;
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
     const renderContext = { canvasContext: ctx, viewport };
     await page.render(renderContext).promise;
-  } catch(error) {
-    console.log("Error rendering page:", error);
+  } catch (error) {
+    console.warn('Error rendering PDF page', num, ':', error.message || error);
   } finally {
     isPageRendering = false;
     if (pageNumPending !== null) {
-       renderPage(pageNumPending);
-       pageNumPending = null ;
+      const next = pageNumPending;
+      pageNumPending = null;
+      renderPage(next);
     }
   }
 }
@@ -1134,80 +1183,192 @@ function openBookPanelFromChip(chip) {
   const pageNumber = parseInt(chip.dataset.page || '1', 10);
   let source = {};
   try { source = JSON.parse(chip.dataset.source || '{}'); } catch(e) {}
+
+  // Normalize the page_range inside the parsed source as well
+  if (source.page_range) {
+    source.page_range = _parsePageRange(source.page_range);
+  }
+
   document.querySelectorAll('.source-chip').forEach(c => c.classList.remove('active'));
   chip.classList.add('active');
   openBookPanel(bookId, pageNumber, source);
 }
 
-async function openBookPanel(bookId,pageNumber,source = {}) {
-  // Do not auto-select every chip with the same book/page.
-  // openBookPanelFromChip() already marks only the exact clicked chip active.
+async function openBookPanel(bookId, pageNumber, source = {}) {
   const panel = document.getElementById('book-panel');
   panel.classList.add('open');
   document.getElementById('book-panel-title').textContent = bookId;
-  
-  const parsedPage = parseInt(pageNumber,10);
-  const safePageNum = isNaN(parsedPage) ? 1 : Math.max(1,parsedPage);
+
+  const parsedPage = parseInt(pageNumber, 10);
+  let safePageNum = isNaN(parsedPage) || parsedPage < 1 ? 1 : parsedPage;
+
   if (bookViewer.bookId === bookId && currentPdfDoc) {
+    // Clamp to total pages if we already know the PDF
+    if (bookViewer.totalPages > 0) {
+      safePageNum = Math.min(safePageNum, bookViewer.totalPages);
+    }
     bookViewer.pageNumber = safePageNum;
-     _pdfUpdateNav();
-     renderPage(safePageNum);
-     showReferenceHighlight(bookId, safePageNum, source);
-     return;
-   }
-   document.getElementById('pdf-placeholder').style.display = 'none'; 
-   document.getElementById('pdf-loading').style.display = 'flex'; 
-   document.getElementById('pdf-canvas-wrapper').style.display = 'none'; 
+    _pdfUpdateNav();
+    renderPage(safePageNum);
+    showReferenceHighlight(bookId, safePageNum, source);
+    return;
+  }
 
-   try {
-     const url =`${API}/pdf/${encodeURIComponent(bookId)}?token=${encodeURIComponent(token)}`;
-     const loadingTask = pdfjsLib.getDocument(url);
-     currentPdfDoc = await loadingTask.promise;
+  document.getElementById('pdf-placeholder').style.display = 'none';
+  document.getElementById('pdf-loading').style.display = 'flex';
+  document.getElementById('pdf-canvas-wrapper').style.display = 'none';
 
-     bookViewer.bookId = bookId;
-     bookViewer.totalPages = currentPdfDoc.numPages;
-     bookViewer.pageNumber = safePageNum;
+  try {
+    const url = `${API}/pdf/${encodeURIComponent(bookId)}?token=${encodeURIComponent(token)}`;
+    const loadingTask = pdfjsLib.getDocument(url);
+    currentPdfDoc = await loadingTask.promise;
 
-     document.getElementById('pdf-loading').style.display = 'none'; 
-     document.getElementById('pdf-canvas-wrapper').style.display = 'block';
+    bookViewer.bookId = bookId;
+    bookViewer.totalPages = currentPdfDoc.numPages;
 
-     _pdfUpdateNav();
-     renderPage(bookViewer.pageNumber);
-     showReferenceHighlight(bookId, safePageNum, source);
-    } catch(error) {
-      document.getElementById('pdf-loading').style.display = 'none'; 
-      document.getElementById('pdf-placeholder').style.display = 'flex'; 
-      document.getElementById('pdf-placeholder').textContent= 'failed to load document'; 
-       console.error('PDF load error:', error);
+    // Clamp requested page to the actual number of pages in the PDF
+    if (safePageNum > bookViewer.totalPages) {
+      console.warn(`Requested page ${safePageNum} exceeds total ${bookViewer.totalPages}, clamping.`);
+      safePageNum = bookViewer.totalPages;
+    }
+    bookViewer.pageNumber = safePageNum;
 
-     }
+    document.getElementById('pdf-loading').style.display = 'none';
+    document.getElementById('pdf-canvas-wrapper').style.display = 'block';
+
+    _pdfUpdateNav();
+    renderPage(bookViewer.pageNumber);
+    showReferenceHighlight(bookId, safePageNum, source);
+  } catch (error) {
+    document.getElementById('pdf-loading').style.display = 'none';
+    document.getElementById('pdf-placeholder').style.display = 'flex';
+    document.getElementById('pdf-placeholder').textContent = 'Failed to load document: ' + (error.message || error);
+    console.error('PDF load error:', error);
+  }
 } 
 
 async function showReferenceHighlight(bookId, pageNumber, source = {}) {
   const box = document.getElementById('reference-highlight-box');
   const wrapper = document.getElementById('pdf-canvas-wrapper');
-  if (!box) return;
-  const section = (source.section_path || []).join(' > ');
-  const chunkId = source.chunk_id ? `Chunk: ${source.chunk_id}` : '';
-  box.style.display = 'block';
-  box.innerHTML = `<div class="ref-title">Highlighted reference used for this answer</div><div style="color:#64748b">Loading referenced page text...</div>`;
+  if (box) {
+    box.style.display = 'none'; // Hide the box completely
+  }
+  
   if (wrapper) {
     wrapper.classList.remove('reference-flash');
     void wrapper.offsetWidth;
     wrapper.classList.add('reference-flash');
   }
+
+  // Scroll the panel to top so the user sees the highlighted page
+  const contentArea = document.getElementById('book-panel-content');
+  if (contentArea) contentArea.scrollTop = 0;
+
+  // Extract text directly from the rendered PDF page using pdf.js
+  // This avoids hitting /books/{id}/page/{n} which 404s when metadata is missing
+  let pdfPageText = '';
+  if (currentPdfDoc) {
+    try {
+      const page = await currentPdfDoc.getPage(pageNumber);
+      const textContent = await page.getTextContent();
+      pdfPageText = textContent.items.map(item => item.str).join(' ').trim();
+    } catch (e) { /* page extraction failed, non-critical */ }
+  }
+
+  const sourceText = (source.text || source.linearized_text || '').trim();
+
+  // Try to highlight matching text on the PDF canvas
+  if (currentPdfDoc) {
+    try {
+      await highlightTextOnPdf(pageNumber, sourceText || pdfPageText);
+    } catch (e) {
+      // highlighting is best-effort
+    }
+  }
+}
+
+/**
+ * Extracts text items from the current PDF page and draws highlight rectangles
+ * over the canvas for any text items that match portions of the source text.
+ */
+async function highlightTextOnPdf(pageNumber, searchText) {
+  if (!currentPdfDoc) return;
+
+  // Remove any old highlight overlay
+  const existingOverlay = document.getElementById('pdf-highlight-overlay');
+  if (existingOverlay) existingOverlay.remove();
+
   try {
-    const res = await apiFetch(`/books/${encodeURIComponent(bookId)}/page/${pageNumber}`);
-    const data = res ? await res.json() : {};
-    const text = (source.text || source.linearized_text || data.text || '').trim();
-    const clipped = text.length > 1800 ? text.slice(0, 1800) + '…' : text;
-    box.innerHTML = `
-      <div class="ref-title">Referenced chunk highlighted — page ${pageNumber}</div>
-      ${section ? `<div style="color:#94a3b8;margin-bottom:6px">${escHtml(section)}</div>` : ''}
-      ${chunkId ? `<div style="color:#64748b;margin-bottom:6px">${escHtml(chunkId)}</div>` : ''}
-      <div><mark>${escHtml(clipped || 'This source points to this PDF page.')}</mark></div>`;
-  } catch(e) {
-    box.innerHTML = `<div class="ref-title">Referenced chunk highlighted — page ${pageNumber}</div><div><mark>This source points to this PDF page.</mark></div>`;
+    const page = await currentPdfDoc.getPage(pageNumber);
+    const textContent = await page.getTextContent();
+    const viewport = page.getViewport({ scale: 1.5 });
+    const canvas = document.getElementById('pdf-canvas');
+    if (!canvas) return;
+
+    // Calculate scale ratio between internal canvas resolution and actual displayed CSS size
+    const cssScale = canvas.offsetWidth / canvas.width;
+
+    // Create an overlay div positioned exactly over the canvas
+    const overlay = document.createElement('div');
+    overlay.id = 'pdf-highlight-overlay';
+    overlay.style.cssText = `
+      position: absolute;
+      top: ${canvas.offsetTop}px;
+      left: ${canvas.offsetLeft}px;
+      width: ${canvas.offsetWidth}px;
+      height: ${canvas.offsetHeight}px;
+      pointer-events: none;
+      z-index: 10;
+    `;
+
+    // Normalize the search text for fuzzy matching
+    const searchNorm = searchText.toLowerCase().replace(/\s+/g, ' ').trim();
+    // Use slightly longer words for better precision, take top 15
+    const searchWords = searchNorm.split(' ').filter(w => w.length > 4).slice(0, 15);
+
+    if (searchWords.length === 0) return;
+
+    let matchCount = 0;
+    for (const item of textContent.items) {
+      if (!item.str || !item.str.trim()) continue;
+      const itemText = item.str.toLowerCase();
+
+      // Check if this text item contains any of the search words
+      const hasMatch = searchWords.some(word => itemText.includes(word));
+      if (!hasMatch) continue;
+
+      // Get the transform to find position in viewport space
+      const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+      
+      // tx[4] and tx[5] are X,Y of the text baseline
+      // Apply the CSS scale to map viewport pixels to screen pixels
+      const x = tx[4] * cssScale;
+      const y = tx[5] * cssScale;
+      const fontSize = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]) * cssScale;
+      const width = item.width * viewport.scale * cssScale;
+
+      const rect = document.createElement('div');
+      rect.style.cssText = `
+        position: absolute;
+        left: ${x}px;
+        top: ${y - fontSize}px;
+        width: ${width}px;
+        height: ${fontSize + (4 * cssScale)}px;
+        background: rgba(250, 204, 21, 0.35);
+        border-radius: 2px;
+        pointer-events: none;
+      `;
+      overlay.appendChild(rect);
+      matchCount++;
+    }
+
+    if (matchCount > 0) {
+      const wrapper = document.getElementById('pdf-canvas-wrapper');
+      wrapper.style.position = 'relative';
+      wrapper.appendChild(overlay);
+    }
+  } catch (e) {
+    // Text extraction failed — no highlights, not a critical error
   }
 }
 
@@ -1242,6 +1403,9 @@ function closeBookPanel() {
     currentPdfDoc= null;
   }
 
+  // Remove text highlight overlay
+  const highlightOverlay = document.getElementById('pdf-highlight-overlay');
+  if (highlightOverlay) highlightOverlay.remove();
 
   const canvas = document.getElementById('pdf-canvas');
   if(canvas) {

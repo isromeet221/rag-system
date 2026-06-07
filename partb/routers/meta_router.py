@@ -93,7 +93,7 @@ async def health():
         col_status={}
         for col in [COLLECTION_PROPS, COLLECTION_SECTIONS]:
             if col in collection_names :
-                col_info = qc.get_collections(col)
+                col_info = qc.get_collection(col)
                 col_status[col] = {
                     "status" : "ok",
                     "points" : col_info.points_count,
