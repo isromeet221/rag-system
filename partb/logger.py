@@ -165,16 +165,16 @@ def log_process(func: Callable) -> Callable:
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs) -> Any:
-        logger.info("┌─ START  %s", _name)
+        logger.info("|- START  %s", _name)
         t0 = time.perf_counter()
         try:
             result = func(*args, **kwargs)
             elapsed = time.perf_counter() - t0
-            logger.info("└─ DONE   %-50s  [total: %.3fs]", _name, elapsed)
+            logger.info("|- DONE   %-50s  [total: %.3fs]", _name, elapsed)
             return result
         except Exception as exc:
             elapsed = time.perf_counter() - t0
-            logger.error("└─ FAILED %-50s  [%.3fs]  %s", _name, elapsed, exc)
+            logger.error("|- FAILED %-50s  [%.3fs]  %s", _name, elapsed, exc)
             raise
 
     return wrapper
@@ -187,16 +187,16 @@ def async_log_process(func: Callable) -> Callable:
 
     @functools.wraps(func)
     async def wrapper(*args, **kwargs) -> Any:
-        logger.info("┌─ START  %s", _name)
+        logger.info("|- START  %s", _name)
         t0 = time.perf_counter()
         try:
             result = await func(*args, **kwargs)
             elapsed = time.perf_counter() - t0
-            logger.info("└─ DONE   %-50s  [total: %.3fs]", _name, elapsed)
+            logger.info("|- DONE   %-50s  [total: %.3fs]", _name, elapsed)
             return result
         except Exception as exc:
             elapsed = time.perf_counter() - t0
-            logger.error("└─ FAILED %-50s  [%.3fs]  %s", _name, elapsed, exc)
+            logger.error("|- FAILED %-50s  [%.3fs]  %s", _name, elapsed, exc)
             raise
 
     return wrapper
