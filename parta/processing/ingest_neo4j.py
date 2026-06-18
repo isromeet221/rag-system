@@ -108,6 +108,10 @@ if _json_path.exists():
 # GLiNER confidence threshold
 GLINER_THRESHOLD = 0.45
 
+# ponytail: lazy-loaded global singletons, same pattern as ingest_qdrant
+_gliner_model = None
+_nltk_tokenize = None
+
 # Max characters per GLiNER batch window (same as original worker)
 GLINER_MAX_CHARS = 500
 
@@ -319,10 +323,7 @@ def _extract_specifications(text: str) -> List[Dict]:
 
 @time_it
 def _load_gliner(base_dir: Path):
-    """
-    Loads GLiNER from portable/gliner/ — same logic as original worker.
-    Returns the loaded model.
-    """
+    """Loads GLiNER from portable/gliner/."""
     from gliner import GLiNER
 
     model_dir = base_dir / "portable" / "gliner"
@@ -334,13 +335,18 @@ def _load_gliner(base_dir: Path):
 
     logger.info(f"[NEO4J] Loading GLiNER from {model_dir}...")
     t0 = time.time()
-    model = GLiNER.from_pretrained(
-        str(model_dir),
-        local_files_only=True,
-    ).to("cpu")
+    model = GLiNER.from_pretrained(str(model_dir), local_files_only=True).to("cpu")
     t1 = time.time()
     logger.info(f"[NEO4J] ✅ GLiNER loaded in {t1 - t0:.2f}s.")
     return model
+
+
+def _get_gliner(base_dir: Path):
+    """Lazy singleton: load GLiNER once per process."""
+    global _gliner_model
+    if _gliner_model is None:
+        _gliner_model = _load_gliner(base_dir)
+    return _gliner_model
 
 
 @time_it
@@ -369,6 +375,14 @@ def _load_nltk(base_dir: Path):
         except LookupError:
             print("[NEO4J] ⚠  NLTK punkt not found. Using regex splitter.")
             return _regex_sent_tokenize
+
+
+def _get_nltk(base_dir: Path):
+    """Lazy singleton: load NLTK tokenizer once per process."""
+    global _nltk_tokenize
+    if _nltk_tokenize is None:
+        _nltk_tokenize = _load_nltk(base_dir)
+    return _nltk_tokenize
 
 
 @time_it
@@ -1006,9 +1020,9 @@ def run_neo4j_ingestion(
             f"        Is Neo4j running? Error: {e}"
         )
 
-    # ── Load models ───────────────────────────────────────────────────────────
-    gliner_model  = _load_gliner(base)
-    sent_tokenize = _load_nltk(base)
+    # ── Load models (lazy singleton — one load per process) ───────────────────
+    gliner_model  = _get_gliner(base)
+    sent_tokenize = _get_nltk(base)
 
     # ── Load data ─────────────────────────────────────────────────────────────
     if progress_callback:
@@ -1164,9 +1178,9 @@ def run_neo4j_batch(
     except Exception as e:
         raise RuntimeError(f"[NEO4J-BATCH] Cannot connect to Neo4j: {e}")
 
-    # ── Load models ───────────────────────────────────────────────────────────
-    gliner_model  = _load_gliner(base)
-    sent_tokenize = _load_nltk(base)
+    # ── Load models (lazy singleton — one load per process) ───────────────────
+    gliner_model  = _get_gliner(base)
+    sent_tokenize = _get_nltk(base)
 
     # ── Load data — full file, then slice ─────────────────────────────────────
     with open(ready_file, "r", encoding="utf-8") as f:
