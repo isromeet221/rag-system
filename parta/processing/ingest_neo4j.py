@@ -337,7 +337,7 @@ def _load_gliner(base_dir: Path):
     t0 = time.time()
     model = GLiNER.from_pretrained(str(model_dir), local_files_only=True).to("cpu")
     t1 = time.time()
-    logger.info(f"[NEO4J] ✅ GLiNER loaded in {t1 - t0:.2f}s.")
+    logger.info(f"[NEO4J] Model loaded: GLiNER in {t1 - t0:.2f}s")
     return model
 
 
@@ -366,14 +366,16 @@ def _load_nltk(base_dir: Path):
     try:
         nltk.data.find("tokenizers/punkt")
         from nltk.tokenize import sent_tokenize
+        logger.info("[NEO4J] Model loaded: NLTK sent_tokenize (punkt)")
         return sent_tokenize
     except LookupError:
         try:
             nltk.data.find("tokenizers/punkt_tab")
             from nltk.tokenize import sent_tokenize
+            logger.info("[NEO4J] Model loaded: NLTK sent_tokenize (punkt_tab)")
             return sent_tokenize
         except LookupError:
-            print("[NEO4J] ⚠  NLTK punkt not found. Using regex splitter.")
+            print("[NEO4J] NLTK punkt not found. Using regex splitter.")
             return _regex_sent_tokenize
 
 
@@ -583,7 +585,7 @@ def _build_hierarchy(
             b=level2_ordered[i + 1],
         )
 
-    print(f"[NEO4J] ✅ Layer 1 done — "
+    print(f"[NEO4J] Layer 1 done — "
           f"{len(seen_paths)} sections, "
           f"{len(level2_ordered)-1} NEXT_SECTION edges")
 
@@ -742,7 +744,7 @@ def _write_cooccurrence_batch(
         )
         written += len(chunk)
 
-    print(f"[NEO4J] ✅ Layer 4 done — {written} co-occurrence edges written in batch")
+    print(f"[NEO4J] Layer 4 done — {written} co-occurrence edges written in batch")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1012,7 +1014,7 @@ def run_neo4j_ingestion(
             max_connection_pool_size=100,
         )
         driver.verify_connectivity()
-        print("[NEO4J] ✅ Neo4j connected.")
+        print("[NEO4J] Neo4j connected.")
         logger.info("[NEO4J] Neo4j connected | uri=%s", NEO4J_URI)
     except Exception as e:
         raise RuntimeError(
@@ -1174,7 +1176,7 @@ def run_neo4j_batch(
             max_connection_pool_size=100,
         )
         driver.verify_connectivity()
-        logger.info("[NEO4J-BATCH] ✅ Neo4j connected.")
+        logger.info("[NEO4J-BATCH] Neo4j connected.")
     except Exception as e:
         raise RuntimeError(f"[NEO4J-BATCH] Cannot connect to Neo4j: {e}")
 
@@ -1279,10 +1281,10 @@ if __name__ == "__main__":
                 base_dir   = str(BASE_DIR),
                 progress_callback = _print_callback,
             )
-            print(f"\n  ✅ Done: {result}")
+            print(f"\n  Done: {result}")
 
         except Exception as e:
-            print(f"  ❌ Error: {e}")
+            print(f"  Error: {e}")
             import traceback
             traceback.print_exc()
             sys.exit(1)

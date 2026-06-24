@@ -113,7 +113,7 @@ def _get_embed_model(base_dir: str):
         device="cpu",
     )
     t1 = time.time()
-    logger.info(f"[QDRANT] ✅ Nomic model loaded in {t1 - t0:.2f}s.")
+    logger.info(f"[QDRANT] Model loaded: Nomic embed-text-v1.5 in {t1 - t0:.2f}s")
     return _embed_model
 
 
@@ -126,7 +126,7 @@ def _get_qdrant_client():
 
     from qdrant_client import QdrantClient
     _q_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
-    print(f"[QDRANT] Connected to Qdrant at {QDRANT_URL}")
+    logger.info(f"[QDRANT] Model loaded: QdrantClient connected to {QDRANT_URL}")
     return _q_client
 
 
@@ -470,7 +470,7 @@ def _write_chunks_log(
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(compat_entries, f, indent=2, ensure_ascii=False)
 
-    print(f"[QDRANT] 📝 Chunk log → {out_path.name}")
+    print(f"[QDRANT] Chunk log written: {out_path.name}")
     return str(out_path)
 
 
@@ -572,7 +572,7 @@ def run_qdrant_ingestion(
         propositions, model, client, book_id,
         progress_callback, total_items, items_done,
     )
-    print(f"[QDRANT] ✅ {prop_count} propositions stored")
+    print(f"[QDRANT] {prop_count} propositions stored")
 
     # ── Ingest sections ───────────────────────────────────────────────────────
     if progress_callback:
@@ -591,7 +591,7 @@ def run_qdrant_ingestion(
         chunks, model, client, book_id,
         progress_callback, total_items, items_done,
     )
-    print(f"[QDRANT] ✅ {sect_count} sections stored")
+    print(f"[QDRANT] {sect_count} sections stored")
 
     # ── Summary ───────────────────────────────────────────────────────────────
     elapsed     = time.perf_counter() - t_start
@@ -776,7 +776,7 @@ if __name__ == "__main__":
         prop_file = checkpoint_dir / f"{book_id}_propositions.json"
 
         if not prop_file.exists():
-            print(f"[QDRANT] ⚠ No propositions file for {book_id}. Skipping.")
+            print(f"[QDRANT] No propositions file for {book_id}. Skipping.")
             continue
 
         print(f"\n{'='*60}")
@@ -791,10 +791,10 @@ if __name__ == "__main__":
                 base_dir   = str(BASE_DIR),
                 progress_callback = _print_callback,
             )
-            print(f"\n  ✅ Total vectors stored: {total}")
+            print(f"\n  Total vectors stored: {total}")
 
         except Exception as e:
-            print(f"  ❌ Error: {e}")
+            print(f"  Error: {e}")
             import traceback
             traceback.print_exc()
             sys.exit(1)
