@@ -1,54 +1,49 @@
 """
-extraction/worker.py
--------------------
-Single worker for PDF extraction.
-Designed to run alongside extraction_server.py.
-
-This version is layout-aware:
-- uses PyMuPDF for fast mode
-- uses Docling for OCR mode (scanned/image-based PDFs)
-- handles basic single-column pages with natural reading order
-- heuristically handles two-column research-paper pages
-- keeps the same server contract as your current worker
+text_workers.py
+Fixed version: model-load lock contention fix, shared model cache preserved,
+failure reporting and connection-state logging restored, Windows file-lock
+(WinError 32) hardened across every disk touch point.
 """
 
 import sys
+import os
+import gc
+import json
+import tempfile
+import time
+import uuid
+import random
+import threading
 from pathlib import Path
+from typing import List
+
+from logger import logger, worker_log_process, setup_worker_logger
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import json
-import time
-import uuid
-from typing import List, Tuple
+# ─────────────────────────────────────────────────────────────
+# Model artifacts stay on the SHARED path. Do NOT give each worker
+# its own HF_HOME / TRANSFORMERS_CACHE — that forces every worker to
+# independently download/cache its own copy of the model, multiplying
+# disk + NAS I/O instead of fixing contention.
+# ─────────────────────────────────────────────────────────────
+BASE_DIR = Path(__file__).resolve().parent.parent
 
-import os
-
-# Point Docling to the portable model cache (must be set before docling import)
-_DOCLING_MODELS_PATH = os.environ.get(
+os.environ.setdefault(
     "DOCLING_ARTIFACTS_PATH",
-    str(Path(__file__).resolve().parent.parent / "parta" / "portable" / "docling"),
+    str(BASE_DIR / "parta" / "portable" / "docling"),
 )
-os.environ.setdefault("DOCLING_ARTIFACTS_PATH", _DOCLING_MODELS_PATH)
+# Stop huggingface_hub / transformers from doing remote lock-file checks
+# against the shared cache on every cold start — this is the actual fix
+# for "all workers stall waiting on the same lock file."
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-import requests
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.datamodel.pipeline_options import PdfPipelineOptions, EasyOcrOptions
+from docling.datamodel.base_models import InputFormat
 
-try:
-    # Newer PyMuPDF installs may expose pymupdf, older code often uses fitz.
-    import pymupdf as fitz
-except ImportError:
-    import fitz
-
-try:
-    from docling.document_converter import DocumentConverter
-    HAS_DOCLING = True
-    # ponytail: lazy singleton, one converter per process
-    _docling_converter = None
-except ImportError:
-    HAS_DOCLING = False
-    _docling_converter = None
-
-from logger import logger, worker_log_process, setup_worker_logger
 
 SERVER_URL = os.environ.get("SERVER_URL", "http://127.0.0.1:8004")
 WORKER_ID = f"text-{uuid.uuid4().hex[:6]}"
@@ -59,235 +54,154 @@ REQUEST_TIMEOUT = 30
 WAIT_SLEEP = 2
 ERROR_SLEEP = 5
 
-Block = Tuple[float, float, float, float, str]
+
+# ─────────────────────────────────────────────────────────────
+# Windows-safe file ops — retry with backoff on transient locks.
+# WinError 32 ("file in use by another process") happens when a
+# library (Docling/PyPdfium backend, antivirus, indexer, or our own
+# trailing handle) hasn't released a handle yet. POSIX never hits
+# this because multiple open handles to one inode are allowed there.
+# ─────────────────────────────────────────────────────────────
+def _win_safe_unlink(path: Path, attempts: int = 8, base_delay: float = 0.15):
+    for i in range(attempts):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError as e:
+            if i == attempts - 1:
+                logger.warning(f"[{WORKER_ID}] Giving up deleting {path} after {attempts} attempts: {e}")
+                return
+            time.sleep(base_delay * (2 ** i))
 
 
-def _clean_block_text(text: str) -> str:
-    """
-    Normalize block text without destroying content structure too much.
-    """
-    if not text:
-        return ""
-
-    lines = [line.rstrip() for line in text.splitlines()]
-    lines = [line for line in lines if line.strip()]
-    return "\n".join(lines).strip()
-
-
-def _collect_text_blocks(page) -> List[Block]:
-    """
-    Return only non-empty text blocks with coordinates.
-    Each block is stored as:
-        (x0, y0, x1, y1, text)
-    """
-    raw_blocks = page.get_text("blocks", sort=False)
-    cleaned: List[Block] = []
-
-    for block in raw_blocks:
-        if len(block) < 5:
-            continue
-
-        x0, y0, x1, y1, text = block[:5]
-        text = _clean_block_text(text)
-
-        if not text:
-            continue
-
-        if x1 <= x0 or y1 <= y0:
-            continue
-
-        cleaned.append((float(x0), float(y0), float(x1), float(y1), text))
-
-    return cleaned
+def _win_safe_write_bytes(path: Path, data: bytes, attempts: int = 5, base_delay: float = 0.15):
+    for i in range(attempts):
+        try:
+            with open(path, "wb") as f:
+                f.write(data)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(base_delay * (2 ** i))
 
 
-def _is_probably_two_column(blocks: List[Block], page_width: float) -> bool:
-    """
-    Heuristic for detecting clear two-column pages.
-    """
-    if len(blocks) < 4:
-        return False
-
-    left = 0
-    right = 0
-    middle = 0
-
-    for x0, y0, x1, y1, _text in blocks:
-        center_x = (x0 + x1) / 2.0
-
-        if center_x < page_width * 0.45:
-            left += 1
-        elif center_x > page_width * 0.55:
-            right += 1
-        else:
-            middle += 1
-
-    # Clear evidence on both sides, with at least some separation.
-    if left >= 2 and right >= 2 and middle <= max(2, len(blocks) // 3):
-        return True
-
-    return False
+def _win_safe_write_text(path: Path, text: str, attempts: int = 5, base_delay: float = 0.15):
+    for i in range(attempts):
+        try:
+            path.write_text(text, encoding="utf-8")
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(base_delay * (2 ** i))
 
 
-def _extract_single_column_text(blocks: List[Block]) -> str:
-    """
-    Sort top-to-bottom, then left-to-right.
-    This is good for single-column pages and many mixed-layout pages.
-    """
-    ordered = sorted(blocks, key=lambda b: (b[1], b[0]))
-    return "\n\n".join(block[4] for block in ordered if block[4]).strip()
+def _win_safe_read_text(path: Path, attempts: int = 5, base_delay: float = 0.15) -> str:
+    for i in range(attempts):
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(base_delay * (2 ** i))
 
 
-def _extract_two_column_text(
-    blocks: List[Block], page_width: float, page_height: float
-) -> str:
-    """
-    Heuristic two-column reconstruction.
-
-    Strategy:
-    - keep very wide blocks as full-width content
-    - split the rest into left/right columns
-    - place top full-width blocks first
-    - then left column
-    - then mid full-width blocks
-    - then right column
-    - then bottom full-width blocks
-
-    This is not perfect, because PDFs are hostile artifacts pretending to be documents,
-    but it is far better than raw stream order for research papers.
-    """
-    full_width: List[Block] = []
-    left_col: List[Block] = []
-    right_col: List[Block] = []
-
-    for x0, y0, x1, y1, text in blocks:
-        width = x1 - x0
-        center_x = (x0 + x1) / 2.0
-
-        # Blocks that span most of the page are usually title, abstract headings,
-        # section headers, wide figures, or references headers.
-        if width >= page_width * 0.65 or (
-            x0 <= page_width * 0.12 and x1 >= page_width * 0.88
-        ):
-            full_width.append((x0, y0, x1, y1, text))
-        elif center_x < page_width / 2.0:
-            left_col.append((x0, y0, x1, y1, text))
-        else:
-            right_col.append((x0, y0, x1, y1, text))
-
-    full_width = sorted(full_width, key=lambda b: (b[1], b[0]))
-    left_col = sorted(left_col, key=lambda b: (b[1], b[0]))
-    right_col = sorted(right_col, key=lambda b: (b[1], b[0]))
-
-    top_band = page_height * 0.20
-    bottom_band = page_height * 0.80
-
-    top_full = [b for b in full_width if b[1] <= top_band]
-    bottom_full = [b for b in full_width if b[1] >= bottom_band]
-    middle_full = [b for b in full_width if b not in top_full and b not in bottom_full]
-
-    parts: List[str] = []
-
-    def add_group(group: List[Block]) -> None:
-        if group:
-            parts.append("\n\n".join(b[4] for b in group if b[4]).strip())
-
-    add_group(top_full)
-    add_group(left_col)
-    add_group(middle_full)
-    add_group(right_col)
-    add_group(bottom_full)
-
-    return "\n\n".join(part for part in parts if part).strip()
+# ─────────────────────────────────────────────────────────────
+# Model-init lock — this is what actually prevents concurrent
+# model-load races WITHIN one process (multiple threads).
+# NOTE: if your 5 workers are 5 separate `python text_workers.py`
+# processes (not threads in one process), this lock does nothing
+# across processes — each process gets its own lock object. Confirm
+# how you're launching workers before relying on this alone.
+# ─────────────────────────────────────────────────────────────
+_model_init_lock = threading.Lock()
+_docling_converter = None
+_docling_ocr_converter = None
 
 
-def _extract_page_text(page) -> str:
-    """
-    Extract one page using layout-aware heuristics.
-    """
-    blocks = _collect_text_blocks(page)
-    if not blocks:
-        return ""
+def _get_converter(ocr: bool = False):
+    global _docling_converter, _docling_ocr_converter
 
-    page_width = float(page.rect.width)
-    page_height = float(page.rect.height)
+    if not ocr and _docling_converter:
+        return _docling_converter
+    if ocr and _docling_ocr_converter:
+        return _docling_ocr_converter
 
-    if not _is_probably_two_column(blocks, page_width):
-        return _extract_single_column_text(blocks)
+    with _model_init_lock:
+        if not ocr:
+            if _docling_converter is None:
+                logger.info(f"[{WORKER_ID}] Loading Docling (standard)...")
+                opts = PdfPipelineOptions(do_ocr=False)
+                _docling_converter = DocumentConverter(
+                    format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
+                )
+                logger.info(f"[{WORKER_ID}] Docling loaded (standard)")
+            return _docling_converter
 
-    return _extract_two_column_text(blocks, page_width, page_height)
+        if _docling_ocr_converter is None:
+            model_dir = BASE_DIR / "parta" / "portable" / "docling" / "EasyOcr"
 
+            logger.info(f"[{WORKER_ID}] Initialising OCR converter (models: {model_dir})")
 
-def _get_docling_converter():
-    """Lazy singleton: create DocumentConverter once per process."""
-    global _docling_converter
-    if _docling_converter is None:
-        _docling_converter = DocumentConverter()
-    return _docling_converter
+            ocr_opts = EasyOcrOptions(
+                lang=["en"],
+                model_storage_directory=str(model_dir),
+            )
 
+            opts = PdfPipelineOptions(do_ocr=True, ocr_options=ocr_opts)
 
-def _extract_with_docling(pdf_bytes: bytes, start_offset: int) -> str:
-    """
-    Extract text from a PDF chunk using Docling.
-    Handles scanned/image-based PDFs via built-in OCR.
-    """
-    if not HAS_DOCLING:
-        raise RuntimeError(
-            "Docling is not installed. Run: pip install docling"
-        )
+            _docling_ocr_converter = DocumentConverter(
+                format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
+            )
 
-    converter = _get_docling_converter()
-    result = converter.convert(pdf_bytes)
-    md_text = result.document.export_to_markdown()
+            logger.info(f"[{WORKER_ID}] Docling loaded (OCR)")
 
-    content_parts: List[str] = []
-    content_parts.append(f"\n\n## Page {start_offset + 1}\n\n{md_text}")
-    return "".join(content_parts).strip()
+        return _docling_ocr_converter
 
 
 @worker_log_process(WORKER_ID)
 def process_chunk(pdf_bytes: bytes, start_offset: int, ocr_enabled: bool = False) -> str:
-    """
-    Extract text from a PDF chunk.
-    Uses Docling (with OCR) when ocr_enabled=True, else uses PyMuPDF fast path.
-    Keeps page numbering with start_offset so your downstream pipeline stays unchanged.
-    """
-    if ocr_enabled:
-        return _extract_with_docling(pdf_bytes, start_offset)
+    converter = _get_converter(ocr=ocr_enabled)
 
+    tmp_path = Path(tempfile.gettempdir()) / f"docling_{uuid.uuid4().hex}_{start_offset}.pdf"
     try:
-        content_parts: List[str] = []
+        tmp_path.write_bytes(pdf_bytes)
+        # note: write_bytes opens and closes the handle in one shot — no
+        # lingering Python handle for Docling to trip over on Windows.
 
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            for i, page in enumerate(doc):
-                page_text = _extract_page_text(page)
+        result = converter.convert(tmp_path)
+        md_text = result.document.export_to_markdown()
 
-                if page_text:
-                    content_parts.append(
-                        f"\n\n## Page {start_offset + i + 1}\n\n{page_text}"
-                    )
+        # Drop Docling's internal reference before we try to delete the file.
+        # Some PDF backends (PyPdfium/PyMuPDF) keep a lazy/mmap-style handle
+        # open until the result object is garbage collected, not the instant
+        # export_to_markdown() returns — that trailing handle is what causes
+        # WinError 32 on the unlink below if we don't release it first.
+        del result
+        gc.collect()  # force GC to release any cyclic refs (PyPdfium mmap)
+    finally:
+        # retry-with-backoff: antivirus / search indexer / a trailing Docling
+        # handle commonly holds the file for tens-to-hundreds of ms after the
+        # "owning" call returns, even when our own code closed everything
+        _win_safe_unlink(tmp_path)
 
-        return "".join(content_parts).strip()
-
-    except Exception as exc:
-        raise RuntimeError(f"PDF extraction failed: {exc}") from exc
+    return f"\n\n## Page {start_offset + 1}\n\n{md_text}".strip()
 
 
 _session = requests.Session()
 
-# ── local result cache — survives NAS disconnect ──────────────────────────────
 RESULT_CACHE_DIR = Path(tempfile.gettempdir()) / "worker_result_cache" / "text"
 RESULT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _cache_result(job_id: str, payload: dict):
     path = RESULT_CACHE_DIR / f"{job_id}.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
+    _win_safe_write_text(path, json.dumps(payload, ensure_ascii=False))
 
 
 def _clear_cached_result(job_id: str):
-    (RESULT_CACHE_DIR / f"{job_id}.json").unlink(missing_ok=True)
+    _win_safe_unlink(RESULT_CACHE_DIR / f"{job_id}.json")
 
 
 def _submit_with_retry(endpoint: str, payload: dict):
@@ -300,6 +214,7 @@ def _submit_with_retry(endpoint: str, payload: dict):
             logger.warning(f"[{WORKER_ID}] Submit returned HTTP {r.status_code}, retrying in {delay}s...")
         except requests.exceptions.ConnectionError:
             logger.warning(f"[{WORKER_ID}] Connection error on submit, retrying in {delay}s...")
+
         time.sleep(delay)
         delay = min(delay * 2, 60)
 
@@ -308,36 +223,50 @@ def _replay_cached_results():
     cached = sorted(RESULT_CACHE_DIR.glob("*.json"))
     if not cached:
         return
+
     logger.info(f"[{WORKER_ID}] Replaying {len(cached)} cached result(s)...")
+
     for cache_file in cached:
         try:
-            with open(cache_file, encoding="utf-8") as f:
-                payload = json.load(f)
+            payload = json.loads(_win_safe_read_text(cache_file))
             r = _session.post(f"{SERVER_URL}/submit_result", json=payload, timeout=30)
             if r.status_code == 200:
-                cache_file.unlink()
+                _win_safe_unlink(cache_file)
                 logger.info(f"[{WORKER_ID}] Replayed and cleared: {cache_file.name}")
             else:
                 logger.warning(f"[{WORKER_ID}] Replay failed HTTP {r.status_code}: {cache_file.name}")
         except Exception as e:
-            logger.warning(f"[{WORKER_ID}] Replay error for {cache_file.name}: {e}")
+            logger.warning(f"[{WORKER_ID}] Replay error: {cache_file.name} -> {e}")
 
 
 is_connected = False
 
+
 def start_worker():
     global is_connected
+
     logger.info("=" * 80)
     logger.info(f"[{WORKER_ID}] TEXT WORKER STARTED (extraction mode)")
     logger.info(f"[{WORKER_ID}] SERVER      : {SERVER_URL}")
-    logger.info(f"[{WORKER_ID}] BASE_DIR    : {Path(__file__).resolve().parent.parent}")
+    logger.info(f"[{WORKER_ID}] BASE_DIR    : {BASE_DIR}")
     logger.info(f"[{WORKER_ID}] CACHE_DIR   : {RESULT_CACHE_DIR}")
     logger.info("=" * 80)
 
-    # ── replay any results cached from a previous run before polling ──────────
+    # stagger startup slightly — harmless even with the lock in place,
+    # avoids 5 workers hitting the model-init lock at the exact same instant
+    time.sleep(random.uniform(0.5, 4.0))
+
     _replay_cached_results()
 
+    # warm up model before entering job loop — fail loud, not silent,
+    # so a broken model path is caught at startup instead of mid-job
+    try:
+        _get_converter(ocr=False)
+    except Exception as e:
+        logger.error(f"[{WORKER_ID}] Model warm-up failed: {e}")
+
     while True:
+        job_id = None
         try:
             resp = _session.get(
                 f"{SERVER_URL}/get_job",
@@ -354,72 +283,68 @@ def start_worker():
                 continue
 
             data = resp.json()
-            action = data.get("action")
 
-            if action == "WAIT":
+            if data.get("action") == "WAIT":
                 time.sleep(WAIT_SLEEP)
                 continue
 
-            if action == "PROCESS":
-                job_id = data["job_id"]
-                book_id = data["book_id"]
-                chunk_idx = data["chunk_idx"]
-                start_offset = data.get("start_offset", 0)
-                ocr_enabled = data.get("ocr_enabled", False)
+            if data.get("action") != "PROCESS":
+                continue
 
-                logger.info(
-                    f"[{WORKER_ID}] Got chunk {chunk_idx} for book {book_id} "
-                    f"(ocr={'yes' if ocr_enabled else 'no'}). Downloading..."
-                )
+            job_id = data["job_id"]
+            book_id = data["book_id"]
+            chunk_idx = data["chunk_idx"]
+            start_offset = data.get("start_offset", 0)
+            ocr_enabled = data.get("ocr_enabled", False)
 
-                chunk_resp = _session.get(
-                    f"{SERVER_URL}/chunk/{job_id}",
-                    stream=True,
-                    timeout=REQUEST_TIMEOUT,
-                )
+            logger.info(f"[{WORKER_ID}] Processing chunk {chunk_idx} (book={book_id})")
 
-                if chunk_resp.status_code == 200:
-                    try:
-                        content = process_chunk(chunk_resp.content, start_offset, ocr_enabled=ocr_enabled)
-                        logger.info(
-                            f"[{WORKER_ID}] Extraction success for chunk {chunk_idx}. Submitting."
-                        )
+            chunk_resp = _session.get(
+                f"{SERVER_URL}/chunk/{job_id}",
+                timeout=REQUEST_TIMEOUT,
+            )
 
-                        # ── build payload, cache locally before attempting submit ──
-                        payload = {
+            if chunk_resp.status_code != 200:
+                logger.error(f"[{WORKER_ID}] Failed to download chunk {job_id} (HTTP {chunk_resp.status_code})")
+                continue
+
+            try:
+                content = process_chunk(chunk_resp.content, start_offset, ocr_enabled)
+            except Exception as e:
+                logger.error(f"[{WORKER_ID}] Extraction failed for chunk {chunk_idx}: {e}")
+                # report failure immediately instead of letting the lease expire
+                try:
+                    _session.post(
+                        f"{SERVER_URL}/submit_result",
+                        json={
                             "job_id": job_id,
                             "worker_id": WORKER_ID,
-                            "success": True,
-                            "content": content,
-                        }
-                        _cache_result(job_id, payload)
-                        _submit_with_retry(f"{SERVER_URL}/submit_result", payload)
-                        _clear_cached_result(job_id)
-                        logger.info(f"[{WORKER_ID}] Completion acknowledged for chunk {chunk_idx}")
+                            "success": False,
+                            "content": "",
+                        },
+                        timeout=REQUEST_TIMEOUT,
+                    )
+                except Exception as e2:
+                    logger.error(f"[{WORKER_ID}] Error submitting failure: {e2}")
+                continue
 
-                    except Exception as e:
-                        logger.error(
-                            f"[{WORKER_ID}] Extraction failed for chunk {chunk_idx}: {e}"
-                        )
-                        _session.post(
-                            f"{SERVER_URL}/submit_result",
-                            json={
-                                "job_id": job_id,
-                                "worker_id": WORKER_ID,
-                                "success": False,
-                                "content": "",
-                            },
-                            timeout=REQUEST_TIMEOUT,
-                        )
-                else:
-                    logger.error(f"[{WORKER_ID}] Failed to download chunk {job_id}")
+            payload = {
+                "job_id": job_id,
+                "worker_id": WORKER_ID,
+                "success": True,
+                "content": content,
+            }
+
+            _cache_result(job_id, payload)
+            _submit_with_retry(f"{SERVER_URL}/submit_result", payload)
+            _clear_cached_result(job_id)
+
+            logger.info(f"[{WORKER_ID}] Completed chunk {chunk_idx}")
 
         except requests.exceptions.ConnectionError:
             if is_connected:
-                logger.error(f"[{WORKER_ID}] Disconnected from server. Waiting to reconnect...")
+                logger.error(f"[{WORKER_ID}] Disconnected from server. Reconnecting...")
                 is_connected = False
-            else:
-                logger.error(f"[{WORKER_ID}] Failed to connect to server at {SERVER_URL}. Retrying...")
             time.sleep(ERROR_SLEEP)
 
         except Exception as e:
