@@ -282,40 +282,38 @@ def _generate_confidence_report(
 ) -> dict:
     """
     Assembles the confidence report shown on the frontend success screen.
-    Reads new _ready.json field names (content, page_range).
-    _chunks.json is written by ingest_qdrant in backward-compatible format.
+    Reads _ready.json which contains the final chunks.
+    Groups chunks by page_number to determine page-level statistics.
     """
     try:
         with open(ready_path, "r", encoding="utf-8") as f:
-            sections = json.load(f)
+            chunks = json.load(f)
     except Exception:
         return {"error": "Could not read _ready.json"}
 
-    chunk_file = BASE_DIR / "data" / "qdrant" / f"{book_id}_chunks.json"
-    chunks = []
-    if chunk_file.exists():
-        try:
-            with open(chunk_file, "r", encoding="utf-8") as f:
-                chunks = json.load(f)
-        except Exception:
-            pass
+    page_word_counts = {}
+    total_words = 0
 
-    good_pages = []
-    short_pages = []
-    blank_pages = []
-
-    for section in sections:
-        text = section.get("content") or section.get("text", "")
+    for chunk in chunks:
+        text = chunk.get("content") or chunk.get("text", "")
         wc = len(text.split())
+        total_words += wc
 
-        page_range = section.get("page_range")
+        page_range = chunk.get("page_range")
         if isinstance(page_range, dict):
             page_num = page_range.get("start", 0)
         elif isinstance(page_range, list) and page_range:
             page_num = page_range[0]
         else:
-            page_num = section.get("page_number", 0)
+            page_num = chunk.get("page_number", 0)
 
+        page_word_counts[page_num] = page_word_counts.get(page_num, 0) + wc
+
+    good_pages = []
+    short_pages = []
+    blank_pages = []
+
+    for page_num, wc in page_word_counts.items():
         if wc >= 50:
             good_pages.append(page_num)
         elif wc >= 10:
@@ -323,20 +321,31 @@ def _generate_confidence_report(
         else:
             blank_pages.append(page_num)
 
-    chunks_by_page: dict = {}
-    for c in chunks:
-        pn = c.get("page_number")
-        if pn is not None:
-            chunks_by_page.setdefault(pn, []).append(c)
+    total_unique_pages = len(page_word_counts)
+    
+    # In the new pipeline, chunks are pre-computed in _ready.json.
+    # Therefore, all text in _ready.json has produced chunks.
+    zero_chunk_pages = [] 
+    
+    # Calculate multi-chunk pages
+    chunks_by_page = {}
+    for chunk in chunks:
+        page_range = chunk.get("page_range")
+        if isinstance(page_range, dict):
+            pn = page_range.get("start", 0)
+        elif isinstance(page_range, list) and page_range:
+            pn = page_range[0]
+        else:
+            pn = chunk.get("page_number", 0)
+        chunks_by_page.setdefault(pn, []).append(chunk)
 
-    zero_chunk_pages = [pn for pn in good_pages if pn not in chunks_by_page]
     multi_chunk_pages = [pn for pn, cl in chunks_by_page.items() if len(cl) > 1]
-    word_counts = [len(c.get("text", "").split()) for c in chunks]
-    avg_words = round(sum(word_counts) / len(word_counts), 1) if word_counts else 0
-    coverage_pct = round(len(good_pages) / max(len(sections), 1) * 100, 1)
+    
+    avg_words = round(total_words / max(len(chunks), 1), 1)
+    coverage_pct = round(len(good_pages) / max(total_unique_pages, 1) * 100, 1)
 
     report = {
-        "total_pages": len(sections),
+        "total_pages": total_unique_pages,
         "good_pages": len(good_pages),
         "short_pages": len(short_pages),
         "blank_image_pages": len(blank_pages),
@@ -355,8 +364,8 @@ def _generate_confidence_report(
 
     logger.info("Confidence Report — %s", book_id)
     logger.info(
-        "  Sections : %d total | %d good | %d short | %d sparse",
-        len(sections),
+        "  Pages    : %d total | %d good | %d short | %d sparse",
+        total_unique_pages,
         len(good_pages),
         len(short_pages),
         len(blank_pages),
