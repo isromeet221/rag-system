@@ -43,17 +43,20 @@ async def list_library(user: dict = Depends(verify_token)):
         bid = b["book_id"]
         confidence = b.get("confidence_report", {})
         total_chunks = confidence.get("total_chunks", 0) if isinstance(confidence, dict) else 0
+        total_pages = count_pages(bid)
+        if not total_pages and isinstance(confidence, dict):
+            total_pages = confidence.get("total_pages", 0)
         out.append(
             {
                 "book_id": bid,
                 "title": b.get("book_title", bid),
-                "total_pages": count_pages(bid),
+                "total_pages": total_pages,
                 "total_chunks": total_chunks,
-                "created_at":(
+                "created_at": (
                     b["completed_at"].isoformat()
                     if isinstance(b.get("completed_at"), datetime)
-                    else b.get("completed_at", ""),
-                 ),
+                    else b.get("completed_at", "")
+                ),
             }
         )
     return {"books": out}
