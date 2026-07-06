@@ -15,7 +15,7 @@ BASE_SYSTEM_PROMPT = (
     "4. If the context does not contain enough information, state exactly "
     "what is missing. Never guess or hallucinate.\n"
     "5. ALWAYS cite the exact source immediately after every fact: "
-    "[Book: X | Page: Y]\n"
+    "[Book: X | § Section Name | Page: Y]\n"
     "6. Give a complete answer regardless of question complexity. "
     "Never truncate your response."
 )

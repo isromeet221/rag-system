@@ -261,10 +261,13 @@ def format_table_for_llm(chunk: dict) -> str:
     section_label = " > ".join(section_path) if section_path else "Unknown Section"
     pr = chunk.get("page_range") or [0, 0]
     bid = chunk.get("book_id") or "?"
-    source_label = (
-        f"Specification Data [{section_label}] "
-        f"[Book: {bid} | Page: {pr[0]}-{pr[1]}]:"
+    # Enhanced citation with section name: [Book: X | § Section Name | Page: Y]
+    citation = (
+        f"[Book: {bid} | § {section_label} | Page: {pr[0]}-{pr[1]}]"
+        if section_label != "Unknown Section"
+        else f"[Book: {bid} | Page: {pr[0]}-{pr[1]}]"
     )
+    source_label = f"Specification Data: {citation}:"
 
     # ── Path 1: structured_json → Markdown pipe table ─────────────────
     structured = chunk.get("structured_json")
@@ -284,7 +287,12 @@ def format_table_for_llm(chunk: dict) -> str:
     # ── Path 3: raw text ───────────────────────────────────────────────
     raw = (chunk.get("text") or chunk.get("content") or "").strip()
     if raw:
-        return f"Data [{section_label}] [Book: {bid} | Page: {pr[0]}-{pr[1]}]:\n{raw}"
+        citation = (
+            f"[Book: {bid} | § {section_label} | Page: {pr[0]}-{pr[1]}]"
+            if section_label != "Unknown Section"
+            else f"[Book: {bid} | Page: {pr[0]}-{pr[1]}]"
+        )
+        return f"Data: {citation}:\n{raw}"
 
     return ""
 
@@ -1130,10 +1138,13 @@ def _build_context_greedy(
         pr = c.get("page_range") or [0, 0]
         bid = c.get("book_id") or "?"
         path_s = " > ".join(c.get("section_path") or [])
-        label = f"[Book: {bid} | Page: {pr[0]}-{pr[1]}]"
-        if path_s:
-            label += f" | Section: {path_s}"
-        label += "\n"
+        # Enhanced citation: [Book: X | § Section Name | Page: Y]
+        citation = (
+            f"[Book: {bid} | § {path_s} | Page: {pr[0]}-{pr[1]}]"
+            if path_s
+            else f"[Book: {bid} | Page: {pr[0]}-{pr[1]}]"
+        )
+        label = citation + "\n"
 
         if len(text.split()) <= LONG_CHUNK_WORDS:
             return label + text
@@ -1202,7 +1213,13 @@ def _build_context_greedy(
                 if raw:
                     pr = c.get("page_range") or [0, 0]
                     bid = c.get("book_id") or "?"
-                    block = f"[Table | Book: {bid} | Page: {pr[0]}-{pr[1]}]\n{raw}"
+                    path_s = " > ".join(c.get("section_path") or [])
+                    citation = (
+                        f"[Table | Book: {bid} | § {path_s} | Page: {pr[0]}-{pr[1]}]"
+                        if path_s
+                        else f"[Table | Book: {bid} | Page: {pr[0]}-{pr[1]}]"
+                    )
+                    block = f"{citation}\n{raw}"
             if not block:
                 continue
             density = score / max(1, len(block))
@@ -1404,7 +1421,13 @@ def build_context(
             if not block:
                 raw = (c.get("text") or "").strip()
                 if raw:
-                    block = f"[Table | Book: {bid} | Page: {pr[0]}-{pr[1]}]\n{raw}"
+                    ts_path = " > ".join(c.get("section_path") or [])
+                    citation = (
+                        f"[Table | Book: {bid} | § {ts_path} | Page: {pr[0]}-{pr[1]}]"
+                        if ts_path
+                        else f"[Table | Book: {bid} | Page: {pr[0]}-{pr[1]}]"
+                    )
+                    block = f"{citation}\n{raw}"
             if not block:
                 continue
             if total + len(block) > max_chars:
@@ -1414,10 +1437,13 @@ def build_context(
             text = (c.get("text") or "").strip()
             if not text:
                 continue
-            label = f"[Book: {bid} | Page: {pr[0]}-{pr[1]}]"
-            if path_s:
-                label += f" | Section: {path_s}"
-            label += "\n"
+            # Enhanced citation: [Book: X | § Section Name | Page: Y]
+            citation = (
+                f"[Book: {bid} | § {path_s} | Page: {pr[0]}-{pr[1]}]"
+                if path_s
+                else f"[Book: {bid} | Page: {pr[0]}-{pr[1]}]"
+            )
+            label = citation + "\n"
 
             if len(text.split()) <= LONG_CHUNK_WORDS:
                 block = label + text
