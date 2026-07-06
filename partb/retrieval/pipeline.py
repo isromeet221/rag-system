@@ -193,69 +193,99 @@ def warm_models() -> None:
 
 
 @time_it
+def _format_pipe_table(headers: list[str], rows: list[dict]) -> str:
+    """
+    Builds a Markdown pipe table from headers and row dicts.
+
+    Columns are padded to the widest value (or header length) for clean alignment.
+    Special characters like newlines and pipe chars in cell values are escaped.
+
+    Returns the table body (no label prefix) or empty string on failure.
+    """
+    if not headers or not rows:
+        return ""
+
+    # Compute column widths (header or data, whichever is wider)
+    col_widths: list[int] = []
+    for h in headers:
+        h_str = str(h) if h else ""
+        max_w = len(h_str)
+        for row in rows:
+            v = str(row.get(h, "") or "")
+            # Replace escaped pipe for width calculation
+            v_clean = v.replace("\\|", "|")
+            max_w = max(max_w, len(v_clean))
+        col_widths.append(max_w)
+
+    # Sanitize a cell value: escape pipe chars, replace newlines with spaces
+    def _sanitize(val: object) -> str:
+        s = str(val) if val is not None else ""
+        s = s.replace("|", "\\|")
+        s = s.replace("\n", " ").replace("\r", "")
+        return s
+
+    lines: list[str] = []
+
+    # Header row
+    header_cells = [_sanitize(h).ljust(col_widths[i]) for i, h in enumerate(headers)]
+    lines.append("| " + " | ".join(header_cells) + " |")
+
+    # Separator row
+    sep_cells = ["-" * w for w in col_widths]
+    lines.append("| " + " | ".join(sep_cells) + " |")
+
+    # Data rows
+    for row in rows:
+        data_cells = []
+        for i, h in enumerate(headers):
+            v = _sanitize(row.get(h, ""))
+            data_cells.append(v.ljust(col_widths[i]))
+        lines.append("| " + " | ".join(data_cells) + " |")
+
+    return "\n".join(lines)
+
+
+@time_it
 def format_table_for_llm(chunk: dict) -> str:
     """
-    Converts a table chunk into LLM-readable bullet list format.
-    Priority: structured_json → linearized_text → raw text.
+    Converts a table chunk into LLM-readable format.
+
+    Priority:
+      1. structured_json → Markdown pipe table (best for LLM comprehension)
+      2. linearized_text → formatted as block text
+      3. raw text → formatted as block text
+
+    Returns the full formatted string including source label, or "" if empty.
     """
     section_path = chunk.get("section_path") or []
     section_label = " > ".join(section_path) if section_path else "Unknown Section"
     pr = chunk.get("page_range") or [0, 0]
     bid = chunk.get("book_id") or "?"
+    source_label = (
+        f"Specification Data [{section_label}] "
+        f"[Book: {bid} | Page: {pr[0]}-{pr[1]}]:"
+    )
 
+    # ── Path 1: structured_json → Markdown pipe table ─────────────────
     structured = chunk.get("structured_json")
     if structured and isinstance(structured, dict):
         headers = structured.get("headers") or []
         rows = structured.get("rows") or []
-
         if headers and rows:
-            lines = [
-                f"Specification Data [{section_label}] [Book: {bid} | Page: {pr[0]}-{pr[1]}]:"
-            ]
-            for row in rows:
-                lowered = {k.lower().strip(): v for k, v in row.items()}
-                param = (
-                    lowered.get("parameter")
-                    or lowered.get("item")
-                    or lowered.get("name")
-                    or lowered.get("description")
-                    or lowered.get("property")
-                    or lowered.get("characteristic")
-                    or next(iter(row.values()), "")
-                )
-                value = (
-                    lowered.get("value")
-                    or lowered.get("values")
-                    or lowered.get("data")
-                    or lowered.get("result")
-                    or lowered.get("measurement")
-                    or ""
-                )
-                unit = lowered.get("unit") or lowered.get("units") or ""
-                if param and value:
-                    unit_str = f" {str(unit).strip()}" if str(unit).strip() else ""
-                    lines.append(f"  - {param}: {value}{unit_str}")
-                else:
-                    parts = []
-                    for h in headers:
-                        v = (row.get(h) or "").strip()
-                        if v:
-                            parts.append(f"{h}: {v}")
-                    if parts:
-                        lines.append("  - " + " | ".join(parts))
-            if len(lines) > 1:
-                return "\n".join(lines)
+            pipe_table = _format_pipe_table(headers, rows)
+            if pipe_table:
+                return f"{source_label}\n{pipe_table}"
 
+    # ── Path 2: linearized_text ────────────────────────────────────────
     linearized = (chunk.get("linearized_text") or "").strip()
     if linearized and len(linearized) > 30:
-        return (
-            f"Specification Data [{section_label}] [Book: {bid} | Page: {pr[0]}-{pr[1]}]:\n"
-            f"{linearized}"
-        )
+        return f"{source_label}\n{linearized}"
 
+    # ── Path 3: raw text ───────────────────────────────────────────────
     raw = (chunk.get("text") or chunk.get("content") or "").strip()
     if raw:
         return f"Data [{section_label}] [Book: {bid} | Page: {pr[0]}-{pr[1]}]:\n{raw}"
+
     return ""
 
 
