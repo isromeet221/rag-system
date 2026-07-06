@@ -63,10 +63,13 @@ from partb.config import (
     BOOST_BOTH,
     COLLECTION_PROPS,
     COLLECTION_SECTIONS,
+    ENABLE_MMR,
     ENTITY_LABELS,
     GLINER_QUERY_THRESHOLD,
     LONG_CHUNK_WORDS,
     METADATA_DIR,
+    MMR_LAMBDA,
+    MMR_POOL_MULTIPLIER,
     MODE_CONFIG,
     NEO4J_ENTITY_LIMIT,
     NEO4J_PASSWORD,
@@ -440,8 +443,18 @@ def neo4j_specs_for_terms(book_ids: list[str], entity_terms: list[str]) -> list[
 
 
 @time_it
-def _parse_payload(pl: dict, pid: str) -> dict:
-    """Parses a Qdrant section payload into a standard dict."""
+def _parse_payload(pl: dict, pid: str, vector: list[float] | None = None) -> dict:
+    """Parses a Qdrant section payload into a standard dict.
+
+    In qdrant_client v1.12+, the .vector attribute on ScoredPoint may
+    return a dict (keyed by vector name, e.g. {"": [...]} for unnamed)
+    instead of a flat list. We normalize to flat list here so downstream
+    consumers (_cosine_sim, mmr_select) always get a list.
+    """
+    # Normalize: Qdrant named-vector dict → flat list
+    if isinstance(vector, dict):
+        # Unnamed vector key is "" or the first key
+        vector = next(iter(vector.values()), None)
     pr = pl.get("page_range")
     page_list = (
         [pr.get("start", 0), pr.get("end", 0)]
@@ -462,6 +475,7 @@ def _parse_payload(pl: dict, pid: str) -> dict:
         "from_qdrant": True,
         "from_neo4j": False,
         "qdrant_score": None,
+        "vector": vector,
     }
 
 
@@ -489,9 +503,11 @@ def fetch_sections_by_chunk_ids(
                 ),
                 limit=len(batch_ids),
                 with_payload=True,
+                with_vectors=ENABLE_MMR,
             )
             for p in pts:
-                results.append(_parse_payload(p.payload or {}, str(p.id)))
+                vec = getattr(p, "vector", None) if ENABLE_MMR else None
+                results.append(_parse_payload(p.payload or {}, str(p.id), vector=vec))
         except Exception as exc:
             logging.warning("Section fetch batch failed: %s", exc)
     return results
@@ -521,6 +537,7 @@ def search_sections_direct(
             query_filter=filters,
             limit=limit,
             with_payload=True,
+            with_vectors=ENABLE_MMR,
         )
         hits = response.points
     except Exception as exc:
@@ -533,7 +550,8 @@ def search_sections_direct(
         if cid in seen:
             continue
         seen.add(cid)
-        s = _parse_payload(h.payload or {}, cid)
+        vec = getattr(h, "vector", None) if ENABLE_MMR else None
+        s = _parse_payload(h.payload or {}, cid, vector=vec)
         s["qdrant_score"] = h.score
         s["from_neo4j"] = (
             any(n in (s.get("section_path") or []) for n in section_names)
@@ -636,7 +654,81 @@ def rerank_candidates(query: str, candidates: list[dict], top_n: int) -> list[di
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 7 — PAGE EXPANSION  ← NEW
+# STEP 6b — MMR DIVERSITY
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@time_it
+def _cosine_sim(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two vectors."""
+    if not a or not b:
+        return 0.0
+    dot = sum(ai * bi for ai, bi in zip(a, b))
+    norm_a = sum(ai * ai for ai in a) ** 0.5
+    norm_b = sum(bi * bi for bi in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+@time_it
+def mmr_select(candidates: list[dict], top_n: int, lambda_: float = 0.7) -> list[dict]:
+    """
+    Maximum Marginal Relevance selection to balance relevance vs. diversity.
+
+    MMR = λ * relevance(c) - (1-λ) * max_{j in selected} similarity(c, c_j)
+
+    Uses rerank_score as the relevance term and cosine similarity between
+    Nomic embedding vectors for the diversity penalty. Candidates without
+    a stored vector fall back to pure relevance ordering.
+
+    Args:
+        candidates: List of candidate dicts sorted by rerank_score descending.
+                    Each should have 'rerank_score' and optionally 'vector'.
+        top_n:      Number of candidates to select.
+        lambda_:    Trade-off parameter. 1.0 = pure relevance, 0.0 = pure diversity.
+
+    Returns:
+        top_n candidates reordered by MMR score, maintaining the original
+        dict structure so downstream code (page expansion, context building)
+        is unaffected.
+    """
+    if not candidates or top_n <= 0:
+        return []
+    if top_n >= len(candidates):
+        return list(candidates)
+
+    selected: list[dict] = []
+    remaining = list(candidates)
+
+    # Seed with the highest-relevance candidate (already first after reranker sort)
+    selected.append(remaining.pop(0))
+
+    while len(selected) < top_n and remaining:
+        mmr_scores = []
+        for c in remaining:
+            rel = c.get("rerank_score", 0.0)
+            c_vec = c.get("vector")
+            if c_vec is None:
+                # No vector available — pure relevance
+                mmr_scores.append(rel)
+                continue
+
+            # Diversity term: max similarity to any already-selected candidate
+            max_sim = max(
+                (_cosine_sim(c_vec, s.get("vector", [])) if s.get("vector") else 0.0)
+                for s in selected
+            )
+            mmr_scores.append(lambda_ * rel - (1.0 - lambda_) * max_sim)
+
+        best_idx = max(range(len(remaining)), key=lambda i: mmr_scores[i])
+        selected.append(remaining.pop(best_idx))
+
+    return selected
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 7 — PAGE EXPANSION
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -1078,7 +1170,22 @@ def retrieve_bundle(query: str, book_ids: list[str], mode: str) -> dict[str, Any
         query, book_ids, neo4j_section_names, sect_lim
     )
     candidates = merge_candidates(parent_sections, direct_sections, neo4j_section_names)
-    top = rerank_candidates(query, candidates, cfg["final_top_n"])
+
+    # Step 6: Rerank — fetch a larger pool when MMR is enabled so there
+    # are enough candidates for diversity selection.
+    pool_n = cfg["final_top_n"] * MMR_POOL_MULTIPLIER if ENABLE_MMR else cfg["final_top_n"]
+    top_reranked = rerank_candidates(query, candidates, pool_n)
+
+    # Step 6b: MMR diversity — reorder candidates to balance relevance
+    # and diversity before page expansion and context building.
+    if ENABLE_MMR and len(top_reranked) > cfg["final_top_n"]:
+        top = mmr_select(top_reranked, cfg["final_top_n"], MMR_LAMBDA)
+        logger.info(
+            "[MMR] applied | pool=%d | selected=%d | lambda=%.2f",
+            len(top_reranked), len(top), MMR_LAMBDA,
+        )
+    else:
+        top = top_reranked[:cfg["final_top_n"]]
 
     # Step 7: Page expansion
     # expand_to_pages() returns ([], []) gracefully if metadata not found,

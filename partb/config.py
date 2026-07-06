@@ -108,6 +108,12 @@ RERANK_MIN_SCORE = float(os.environ.get("RAG_RERANK_MIN_SCORE", "0.0"))
 RERANK_LOG_DISTRIBUTION_EVERY = int(os.environ.get("RAG_RERANK_LOG_DIST_EVERY", "1"))
 
 
+# MMR (Maximum Marginal Relevance) diversity
+ENABLE_MMR = os.environ.get("RAG_ENABLE_MMR", "0") == "1"
+MMR_LAMBDA = float(os.environ.get("RAG_MMR_LAMBDA", "0.7"))
+MMR_POOL_MULTIPLIER = int(os.environ.get("RAG_MMR_POOL_MULTIPLIER", "2"))
+
+
 
 # Apply Qdrant/Neo env for processing.* imports (ingest_vectors / ingest_graph)
 @time_it
