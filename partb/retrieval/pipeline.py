@@ -1611,7 +1611,8 @@ def retrieve_bundle(query: str, book_ids: list[str], mode: str) -> dict[str, Any
             query_type, len(hierarchy_block), len(context) - len(hierarchy_block) - 6, len(context),
         )
 
-    system_prompt = get_system_prompt(mode)
+    # Build system prompt with query-type-specific instructions
+    system_prompt = get_system_prompt(mode, query_type)
 
     # ── Sources: reflect what the LLM ACTUALLY saw ────────────────────────────
     # Map rank-1 / rank-2 chunk -> did its page make it into context? If so, we
