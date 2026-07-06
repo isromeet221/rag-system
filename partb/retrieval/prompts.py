@@ -1,4 +1,4 @@
-from partb.logger import time_it, async_time_it
+from partb.logger import time_it
 
 """System prompts — aligned with parta/test.py."""
 

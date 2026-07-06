@@ -91,7 +91,7 @@ from partb.config import (
     RERANK_SEGMENT_TOKENS,
     SECT_RETRIEVE_LIMIT,
 )
-from partb.logger import async_time_it, log_process, logger, time_it
+from partb.logger import log_process, logger, time_it
 from partb.retrieval.prompts import get_system_prompt
 
 logging.getLogger("transformers").setLevel(logging.ERROR)
@@ -903,17 +903,34 @@ def expand_to_pages(
 
     if bid1 and n1 > 0 and page_expand_range > 0:
         # Fetch all pages in range [N-R, N+R]
+        # Use parallel dicts keyed by offset so expansions stay aligned with
+        # page_contents when budget trimming drops pages.
         page_contents: dict[int, str] = {}
+        rank1_expansions: dict[int, dict] = {}
         for offset in range(-page_expand_range, page_expand_range + 1):
+            page_num = n1 + offset
+            if page_num < 0:
+                continue
+            key = (bid1, page_num)
+            if key in fetched_pages:
+                continue
             if offset < 0:
                 relation = "prev"
             elif offset == 0:
                 relation = "main"
             else:
                 relation = "next"
-            content = _fetch(bid1, n1 + offset, cid1, 1, relation)
+            content = load_page_content(bid1, page_num)
             if content:
+                fetched_pages.add(key)
                 page_contents[offset] = content
+                rank1_expansions[offset] = {
+                    "book_id": bid1,
+                    "page": page_num,
+                    "expanded_from_chunk_id": cid1,
+                    "rank": 1,
+                    "relation": relation,
+                }
 
         # Enforce combined character budget — drop outermost pages first
         combined_len = sum(len(c) for c in page_contents.values())
@@ -927,6 +944,7 @@ def expand_to_pages(
                     continue  # never drop the main page
                 combined_len -= len(page_contents[offset])
                 del page_contents[offset]
+                del rank1_expansions[offset]
 
         # Trim the farthest remaining non-main page if still over budget
         if combined_len > PAGE_EXPAND_MAX_CHARS and len(page_contents) > 1:
@@ -943,6 +961,7 @@ def expand_to_pages(
         # Append in reading order (ascending page number)
         for offset in sorted(page_contents.keys()):
             page_blocks.append(page_contents[offset])
+            expansions.append(rank1_expansions[offset])
 
     elif bid1 and n1 > 0 and page_expand_range == 0:
         # page_expand_range=0: main page only, no adjacent expansion
@@ -1042,27 +1061,6 @@ def _segment_windows(text: str, max_words: int) -> list[str]:
     if cur:
         windows.append(" ".join(cur).strip())
     return [w for w in windows if w]
-
-
-@time_it
-def _rerank_score_one(reranker, query: str, text: str) -> float:
-    """
-    Scores a single (query, chunk) pair, segment-max pooling long chunks.
-
-    Jina Reranker v3 has 131K context so most chunks fit in one pass.
-    For chunks longer than RERANK_FULL_CHUNK_WORDS we split into windows
-    and take the max score.
-    """
-    text = (text or "").strip()
-    if not text:
-        return 0.0
-    if len(text.split()) <= RERANK_FULL_CHUNK_WORDS:
-        return float(reranker.rerank(query, [text])[0]["relevance_score"])
-    windows = _segment_windows(text, RERANK_SEGMENT_TOKENS)
-    if not windows:
-        return float(reranker.rerank(query, [text[: RERANK_SEGMENT_TOKENS * 5]])[0]["relevance_score"])
-    scores = reranker.rerank(query, windows)
-    return float(max(r["relevance_score"] for r in scores)) if scores else 0.0
 
 
 # Monotonic query counter for sampling score-distribution log output.

@@ -1,9 +1,15 @@
 import os
+import sys
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from transformers import AutoModel
 
-os.environ["HF_TOKEN"] = "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"
+# Read HF_TOKEN from environment; fall back to CLI arg if provided
+hf_token = os.environ.get("HF_TOKEN") or (sys.argv[1] if len(sys.argv) > 1 else "")
+if hf_token:
+    os.environ["HF_TOKEN"] = hf_token
+else:
+    print("Warning: HF_TOKEN not set. Set the HF_TOKEN environment variable or pass it as a CLI argument.")
 
 repo_root = Path(os.path.abspath('..'))
 nomic_dir = repo_root / "parta" / "portable" / "nomic"

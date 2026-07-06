@@ -21,38 +21,35 @@ QDRANT_DIR = PARTA_DATA_DIR / "qdrant"
 
 
 # Mongo (same as Part A defaults)
-# MONGO_URI = "mongodb://localhost:27017"
-MONGO_URI = "mongodb+srv://redrepter:ncq4fIo18UK948dV@krutrim.li124fs.mongodb.net/?appName=krutrim"
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
 MONGO_DB =  "rag_system"
 
 
 # JWT — MUST match Part A in production
-JWT_SECRET =  "ISRO_RAG_SECRET_CHANGE_IN_PROD"
+JWT_SECRET = os.environ.get("JWT_SECRET", "ISRO_RAG_SECRET_CHANGE_IN_PROD")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS =8
 
 # LiteLLM OpenAI-compatible proxy (Master)
 LITELLM_BASE_URL = "http://127.0.0.1:4000/v1"
 # LITELLM_BASE_URL = "https://api.mistral.ai/v1"
-LITELLM_API_KEY = "yU15nPBcRPH0myzxjlZBQATOvDBRSgQB"
+LITELLM_API_KEY = os.environ.get("LITELLM_API_KEY", "")
 
 # If "1", stream from local Ollama /api/generate instead (dev fallback)
 USE_OLLAMA_DIRECT = False
 OLLAMA_URL =  "http://127.0.0.1:11434"
 
 # QDRANT_URL =  "http://localhost:6333"
-QDRANT_URL           = "https://9a5b0165-5dab-4d30-8b0c-95319c7c1191.us-east-2-0.aws.cloud.qdrant.io"
-QDRANT_API_KEY       = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIiwic3ViamVjdCI6ImFwaS1rZXk6ODVhODM3MDEtYWYyMS00MWQ2LTgzOTItN2FmYWExZTQyNTI2In0.FYpoWi_q1lwgOs58R_OqsboC32qWhl60LJXv3Rtg4OY"
+QDRANT_URL           = os.environ.get("QDRANT_URL", "http://localhost:6333")
+QDRANT_API_KEY       = os.environ.get("QDRANT_API_KEY", "")
 COLLECTION_PROPS     = "RAG_PROPOSITIons"
 COLLECTION_SECTIONS = "RAG_sections"
 
 
 # NEO4J_URI = "bolt://localhost:7687"
-# NEO4J_USER = "neo4j"
-# NEO4J_PASSWORD = "sac@1234"
-NEO4J_URI = "neo4j+s://95a8070a.databases.neo4j.io"
-NEO4J_USER = "95a8070a"
-NEO4J_PASSWORD = "39TVuQIDdPNbNnVNgiWGzi_SVl17V-8hetw54nLyI0M"
+NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "")
 
 import json
 from partb.logger import time_it, async_time_it
