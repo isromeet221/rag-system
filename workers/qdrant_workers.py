@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from logger import logger, worker_log_process, setup_worker_logger
+from workers.logger import logger, worker_log_process, setup_worker_logger
 
 import requests
 from parta.processing.ingest_qdrant import run_qdrant_batch
@@ -20,6 +20,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent / "parta"
 
 # ── persistent session — reuses TCP connection across all poll cycles ─────────
 _session = requests.Session()
+_session.headers.update({"ngrok-skip-browser-warning": "true"})
 
 # ── local result cache — survives NAS disconnect ──────────────────────────────
 RESULT_CACHE_DIR = Path(tempfile.gettempdir()) / "worker_result_cache" / "qdrant"

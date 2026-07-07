@@ -29,6 +29,28 @@ def download_offline_models():
     print("Downloading NLTK data...")
     nltk.download('punkt', download_dir=nltk_dir)
     nltk.download('punkt_tab', download_dir=nltk_dir)
+
+    print("Downloading Docling models...")
+    os.environ["HF_HUB_OFFLINE"] = "0"
+    os.environ["TRANSFORMERS_OFFLINE"] = "0"
+    
+    try:
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.datamodel.pipeline_options import PdfPipelineOptions, EasyOcrOptions
+        from docling.datamodel.base_models import InputFormat
+        
+        # Standard models
+        DocumentConverter()
+        print("Standard docling downloaded.")
+        
+        # OCR models
+        ocr_opts = EasyOcrOptions(lang=["en"])
+        opts = PdfPipelineOptions(do_ocr=True, ocr_options=ocr_opts)
+        DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
+        print("OCR docling downloaded.")
+    except Exception as e:
+        print(f"Warning: Docling models failed to download completely: {e}")
+
     print("All models downloaded and baked into the image.")
 
 image = (
@@ -48,7 +70,10 @@ image = (
         "gliner",
         "huggingface_hub",
         "transformers",
-        "torch"
+        "accelerate",
+        "docling",
+        "torch",
+        "easyocr"
     )
     .run_function(download_offline_models) # Bake 3GB models into image!
     .add_local_dir(
@@ -101,6 +126,7 @@ def run_qdrant_worker(server_url: str):
 
 @app.local_entrypoint()
 def summon(workers_count: int = 5, server_url: str = "http://YOUR_SERVER_URL:8004"):
+    server_url = server_url.strip()
     print(f"Summoning {workers_count} workers of each type to Modal infrastructure...")
     
     for i in range(workers_count):
@@ -111,4 +137,11 @@ def summon(workers_count: int = 5, server_url: str = "http://YOUR_SERVER_URL:800
         
     print(f"\nSummoned {workers_count * 3} total workers successfully!")
     print(f"They are pulling jobs from: {server_url}")
+    print("Press Ctrl+C to stop the workers.")
+    import time
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Stopping workers...")
     print("Monitor their progress in the Modal Dashboard.")

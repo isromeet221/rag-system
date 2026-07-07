@@ -23,7 +23,7 @@ import random
 import threading
 from pathlib import Path
 
-from logger import logger, worker_log_process, setup_worker_logger
+from workers.logger import logger, worker_log_process, setup_worker_logger
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -183,8 +183,8 @@ os.environ["DOCLING_ARTIFACTS_PATH"] = str(LOCAL_DOCLING_DIR)
 # actually kills lock-file contention. Pointing offline mode at a shared
 # network path (the old setup) doesn't fix SMB locking, it just removes
 # the network round-trip while leaving the lock contention intact.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("HF_HUB_OFFLINE", "0")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
 
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.pipeline_options import PdfPipelineOptions, EasyOcrOptions
@@ -224,13 +224,10 @@ def _get_converter(ocr: bool = False):
             return _docling_converter
 
         if _docling_ocr_converter is None:
-            model_dir = LOCAL_DOCLING_DIR / "EasyOcr"
-
-            logger.info(f"[{WORKER_ID}] Initialising OCR converter (models: {model_dir})")
+            logger.info(f"[{WORKER_ID}] Initialising OCR converter (default models)")
 
             ocr_opts = EasyOcrOptions(
-                lang=["en"],
-                model_storage_directory=str(model_dir),
+                lang=["en"]
             )
 
             opts = PdfPipelineOptions(do_ocr=True, ocr_options=ocr_opts)
@@ -295,9 +292,8 @@ def process_chunk(pdf_bytes: bytes, start_offset: int, ocr_enabled: bool = False
 
     return "\n\n".join(parts) if parts else ""
 
-
 _session = requests.Session()
-
+_session.headers.update({"ngrok-skip-browser-warning": "true"})
 # Moved off system temp. Windows disk cleanup / some AV tools sweep
 # %TEMP% on their own schedule — that defeats the entire point of a
 # crash/power-cut recovery cache. LOCALAPPDATA persists.
@@ -359,7 +355,7 @@ def start_worker():
     logger.info(f"[{WORKER_ID}] TEXT WORKER STARTED (extraction mode)")
     logger.info(f"[{WORKER_ID}] SERVER      : {SERVER_URL}")
     logger.info(f"[{WORKER_ID}] BASE_DIR    : {BASE_DIR}")
-    logger.info(f"[{WORKER_ID}] MODEL_DIR   : {LOCAL_DOCLING_DIR} (local, synced from NAS)")
+    logger.info(f"[{WORKER_ID}] MODEL_DIR   : ~/.cache/huggingface (local, built in image)")
     logger.info(f"[{WORKER_ID}] CACHE_DIR   : {RESULT_CACHE_DIR}")
     logger.info("=" * 80)
 

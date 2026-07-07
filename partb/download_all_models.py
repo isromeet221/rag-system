@@ -13,7 +13,7 @@ else:
 
 repo_root = Path(os.path.abspath('..'))
 nomic_dir = repo_root / "parta" / "portable" / "nomic"
-reranker_dir = repo_root / "parta" / "portable" / "reranker"
+reranker_dir = repo_root / "parta" / "portable" / "jina-reranker-v3"
 
 nomic_dir.mkdir(parents=True, exist_ok=True)
 reranker_dir.mkdir(parents=True, exist_ok=True)
