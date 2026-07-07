@@ -64,10 +64,13 @@ from partb.config import (
     COLLECTION_PROPS,
     COLLECTION_SECTIONS,
     CONTEXT_GREEDY,
+    ENABLE_HYBRID,
     ENABLE_MMR,
     ENABLE_QUERY_CLASSIFICATION,
     ENTITY_LABELS,
     GLINER_QUERY_THRESHOLD,
+    HYBRID_POOL_MULTIPLIER,
+    HYBRID_RRF_K,
     LONG_CHUNK_WORDS,
     METADATA_DIR,
     MMR_LAMBDA,
@@ -92,6 +95,7 @@ from partb.config import (
     SECT_RETRIEVE_LIMIT,
 )
 from partb.logger import log_process, logger, time_it
+from partb.retrieval.hybrid import build_and_fuse
 from partb.retrieval.prompts import get_system_prompt
 
 logging.getLogger("transformers").setLevel(logging.ERROR)
@@ -1638,6 +1642,23 @@ def retrieve_bundle(query: str, book_ids: list[str], mode: str) -> dict[str, Any
     direct_sections = search_sections_direct(
         query, effective_book_ids, neo4j_section_names, sect_lim
     )
+
+    # ── Step 4b: Hybrid Search Fusion (Vector + BM25) ────────────────────────
+    # Fuse vector search results with BM25 keyword results using RRF to catch
+    # exact-term matches that vector search may miss.
+    if ENABLE_HYBRID:
+        bm25_pool = sect_lim * HYBRID_POOL_MULTIPLIER
+        fused = build_and_fuse(
+            query,
+            direct_sections,
+            qdrant_client=get_qdrant(),
+            book_ids=effective_book_ids or None,
+            top_k=bm25_pool,
+            rrf_k=HYBRID_RRF_K,
+        )
+        if fused:
+            direct_sections = fused
+
     candidates = merge_candidates(parent_sections, direct_sections, neo4j_section_names)
 
     # Step 6: Rerank — fetch a larger pool when MMR is enabled so there

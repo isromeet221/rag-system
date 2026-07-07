@@ -105,6 +105,13 @@ RERANK_MIN_SCORE = float(os.environ.get("RAG_RERANK_MIN_SCORE", "0.0"))
 RERANK_LOG_DISTRIBUTION_EVERY = int(os.environ.get("RAG_RERANK_LOG_DIST_EVERY", "1"))
 
 
+# ── Hybrid Search (Vector + BM25) ────────────────────────────────────────────────
+ENABLE_HYBRID = os.environ.get("RAG_ENABLE_HYBRID", "0") == "1"
+HYBRID_RRF_K = int(os.environ.get("RAG_HYBRID_RRF_K", "60"))
+# How many extra candidates per retrieval path to allow RRF room to re-rank.
+HYBRID_POOL_MULTIPLIER = int(os.environ.get("RAG_HYBRID_POOL_MULTIPLIER", "2"))
+
+
 # MMR (Maximum Marginal Relevance) diversity
 ENABLE_MMR = os.environ.get("RAG_ENABLE_MMR", "0") == "1"
 MMR_LAMBDA = float(os.environ.get("RAG_MMR_LAMBDA", "0.7"))
