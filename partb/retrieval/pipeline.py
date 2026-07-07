@@ -60,10 +60,14 @@ import time
 from typing import Any, AsyncIterator
 
 from partb.config import (
+    ADAPTIVE_DEPTH_EXPAND_MULTIPLIER,
+    ADAPTIVE_DEPTH_INITIAL_FRACTION,
+    ADAPTIVE_DEPTH_SCORE_THRESHOLD,
     BOOST_BOTH,
     COLLECTION_PROPS,
     COLLECTION_SECTIONS,
     CONTEXT_GREEDY,
+    ENABLE_ADAPTIVE_DEPTH,
     ENABLE_HYBRID,
     ENABLE_MMR,
     ENABLE_QUERY_CLASSIFICATION,
@@ -1629,8 +1633,20 @@ def retrieve_bundle(query: str, book_ids: list[str], mode: str) -> dict[str, Any
             effective_boost_mult, effective_page_range, cross_book,
         )
 
+    # ── Adaptive depth: use conservative limits for first pass ──────────────
+    if ENABLE_ADAPTIVE_DEPTH:
+        first_prop_lim = max(5, int(prop_lim * ADAPTIVE_DEPTH_INITIAL_FRACTION))
+        first_sect_lim = max(5, int(sect_lim * ADAPTIVE_DEPTH_INITIAL_FRACTION))
+        logger.info(
+            "[ADAPTIVE] first pass | prop_lim=%d (normal=%d) | sect_lim=%d (normal=%d)",
+            first_prop_lim, prop_lim, first_sect_lim, sect_lim,
+        )
+    else:
+        first_prop_lim = prop_lim
+        first_sect_lim = sect_lim
+
     # Steps 1-6: use effective_book_ids instead of original book_ids
-    prop_hits = search_propositions(query, effective_book_ids, prop_lim)
+    prop_hits = search_propositions(query, effective_book_ids, first_prop_lim)
     entity_terms = extract_query_entities(query)
     neo4j_section_names = neo4j_sections_for_entities(effective_book_ids, entity_terms)
     specs = neo4j_specs_for_terms(effective_book_ids, entity_terms)
@@ -1640,14 +1656,14 @@ def retrieve_bundle(query: str, book_ids: list[str], mode: str) -> dict[str, Any
     )
     parent_sections = fetch_sections_by_chunk_ids(parent_chunk_ids, effective_book_ids)
     direct_sections = search_sections_direct(
-        query, effective_book_ids, neo4j_section_names, sect_lim
+        query, effective_book_ids, neo4j_section_names, first_sect_lim
     )
 
     # ── Step 4b: Hybrid Search Fusion (Vector + BM25) ────────────────────────
     # Fuse vector search results with BM25 keyword results using RRF to catch
     # exact-term matches that vector search may miss.
     if ENABLE_HYBRID:
-        bm25_pool = sect_lim * HYBRID_POOL_MULTIPLIER
+        bm25_pool = first_sect_lim * HYBRID_POOL_MULTIPLIER
         fused = build_and_fuse(
             query,
             direct_sections,
@@ -1665,6 +1681,66 @@ def retrieve_bundle(query: str, book_ids: list[str], mode: str) -> dict[str, Any
     # are enough candidates for diversity selection.
     pool_n = effective_final_top_n * MMR_POOL_MULTIPLIER if ENABLE_MMR else effective_final_top_n
     top_reranked = rerank_candidates(query, candidates, pool_n, boost_mult=effective_boost_mult)
+
+    # ── Adaptive depth: second pass (expanded) if top score is too low ───────
+    if (
+        ENABLE_ADAPTIVE_DEPTH
+        and top_reranked
+        and top_reranked[0].get("rerank_score", 0.0) < ADAPTIVE_DEPTH_SCORE_THRESHOLD
+    ):
+        expanded_prop_lim = max(first_prop_lim + 1, int(first_prop_lim * ADAPTIVE_DEPTH_EXPAND_MULTIPLIER))
+        expanded_sect_lim = max(first_sect_lim + 1, int(first_sect_lim * ADAPTIVE_DEPTH_EXPAND_MULTIPLIER))
+        logger.info(
+            "[ADAPTIVE] second pass | top_score=%.4f < %.2f | "
+            "expanding prop: %d->%d | sect: %d->%d",
+            top_reranked[0].get("rerank_score", 0.0),
+            ADAPTIVE_DEPTH_SCORE_THRESHOLD,
+            first_prop_lim, expanded_prop_lim,
+            first_sect_lim, expanded_sect_lim,
+        )
+
+        # Re-run proposition search with expanded limits
+        expanded_prop_hits = search_propositions(query, effective_book_ids, expanded_prop_lim)
+        # Re-run section search with expanded limits
+        expanded_direct = search_sections_direct(
+            query, effective_book_ids, neo4j_section_names, expanded_sect_lim,
+        )
+        # Fetch parent sections for any new proposition IDs
+        new_parent_ids = list(
+            {p["parent_chunk_id"] for p in expanded_prop_hits if p.get("parent_chunk_id")}
+        )
+        new_ids_to_fetch = [cid for cid in new_parent_ids if cid not in set(parent_chunk_ids)]
+        expanded_parent_sections = fetch_sections_by_chunk_ids(new_ids_to_fetch, effective_book_ids)
+
+        # Hybrid fusion on expanded results if enabled
+        if ENABLE_HYBRID:
+            bm25_pool_expanded = expanded_sect_lim * HYBRID_POOL_MULTIPLIER
+            fused = build_and_fuse(
+                query,
+                expanded_direct,
+                qdrant_client=get_qdrant(),
+                book_ids=effective_book_ids or None,
+                top_k=bm25_pool_expanded,
+                rrf_k=HYBRID_RRF_K,
+            )
+            if fused:
+                expanded_direct = fused
+
+        # Merge expanded results with existing candidates and re-rerank
+        expanded_candidates = merge_candidates(
+            parent_sections + expanded_parent_sections,
+            direct_sections + expanded_direct,
+            neo4j_section_names,
+        )
+        expanded_pool_n = max(pool_n, effective_final_top_n * ADAPTIVE_DEPTH_EXPAND_MULTIPLIER)
+        top_reranked = rerank_candidates(
+            query, expanded_candidates, expanded_pool_n, boost_mult=effective_boost_mult,
+        )
+        logger.info(
+            "[ADAPTIVE] after expand | candidates: %d->%d | after rerank: %d | top_score=%.4f",
+            len(candidates), len(expanded_candidates), len(top_reranked),
+            top_reranked[0].get("rerank_score", 0.0) if top_reranked else 0.0,
+        )
 
     # Step 6b: MMR diversity
     if ENABLE_MMR and len(top_reranked) > effective_final_top_n:

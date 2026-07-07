@@ -105,6 +105,17 @@ RERANK_MIN_SCORE = float(os.environ.get("RAG_RERANK_MIN_SCORE", "0.0"))
 RERANK_LOG_DISTRIBUTION_EVERY = int(os.environ.get("RAG_RERANK_LOG_DIST_EVERY", "1"))
 
 
+# ── Adaptive Retrieval Depth ──────────────────────────────────────────────
+# Two-pass: start conservative, expand if reranker scores are low.
+ENABLE_ADAPTIVE_DEPTH = os.environ.get("RAG_ENABLE_ADAPTIVE_DEPTH", "0") == "1"
+# First pass uses this fraction of normal proposition/section limits.
+ADAPTIVE_DEPTH_INITIAL_FRACTION = float(os.environ.get("RAG_ADAPTIVE_DEPTH_FRACTION", "0.5"))
+# If top reranker score is below threshold on first pass, trigger second pass.
+ADAPTIVE_DEPTH_SCORE_THRESHOLD = float(os.environ.get("RAG_ADAPTIVE_DEPTH_THRESHOLD", "0.5"))
+# Multiply first-pass limits by this for the second pass.
+ADAPTIVE_DEPTH_EXPAND_MULTIPLIER = int(os.environ.get("RAG_ADAPTIVE_DEPTH_MULTIPLIER", "2"))
+
+
 # ── Hybrid Search (Vector + BM25) ────────────────────────────────────────────────
 ENABLE_HYBRID = os.environ.get("RAG_ENABLE_HYBRID", "0") == "1"
 HYBRID_RRF_K = int(os.environ.get("RAG_HYBRID_RRF_K", "60"))
@@ -174,13 +185,20 @@ def apply_parta_service_env() -> None:
 MODE_ORDER = ("fast", "balanced", "deep")
 
 # LiteLLM model_name must match deploy/litellm_config.yaml entries
+# Per-mode retrieval limits for propositions and sections.
+# These control how many candidates are initially fetched per retrieval path.
+# Adaptive depth scales these down by ADAPTIVE_DEPTH_INITIAL_FRACTION for
+# the first pass, then back up by ADAPTIVE_DEPTH_EXPAND_MULTIPLIER if needed.
+# Each mode can be tuned independently.
 MODE_CONFIG: dict[str, dict] = {
     "fast": {
         "litellm_model": "open-mistral-nemo",
         "ollama_model": "gemma3:1b",  # direct fallback
         "qdrant_over_retrieve": int(os.environ.get("RAG_FAST_QDRANT_LIMIT", "40")),
-        "final_top_n": int(os.environ.get("RAG_FAST_FINAL_TOP", "8")),
-        "context_max_chars": int(os.environ.get("RAG_FAST_CTX_CHARS", "12000")),
+        "prop_retrieve_limit": int(os.environ.get("RAG_FAST_PROP_LIMIT", "20")),
+        "sect_retrieve_limit": int(os.environ.get("RAG_FAST_SECT_LIMIT", "20")),
+        "final_top_n": int(os.environ.get("RAG_FAST_FINAL_TOP", "6")),
+        "context_max_chars": int(os.environ.get("RAG_FAST_CTX_CHARS", "10000")),
         "history_pairs": 3,
         "llm_timeout_s": float(os.environ.get("RAG_FAST_LLM_TIMEOUT", "600")),
     },
@@ -188,6 +206,8 @@ MODE_CONFIG: dict[str, dict] = {
         "litellm_model": "mistral-small-latest",
         "ollama_model": "mistral:7b-instruct-q4_K_M",
         "qdrant_over_retrieve": int(os.environ.get("RAG_BAL_QDRANT_LIMIT", "40")),
+        "prop_retrieve_limit": int(os.environ.get("RAG_BAL_PROP_LIMIT", "30")),
+        "sect_retrieve_limit": int(os.environ.get("RAG_BAL_SECT_LIMIT", "30")),
         "final_top_n": int(os.environ.get("RAG_BAL_FINAL_TOP", "8")),
         "context_max_chars": int(os.environ.get("RAG_BAL_CTX_CHARS", "14000")),
         "history_pairs": 5,
@@ -197,6 +217,8 @@ MODE_CONFIG: dict[str, dict] = {
         "litellm_model": "mistral-large-latest",
         "ollama_model": "llama3.1:8b-instruct-q4_K_M",
         "qdrant_over_retrieve": int(os.environ.get("RAG_DEEP_QDRANT_LIMIT", "48")),
+        "prop_retrieve_limit": int(os.environ.get("RAG_DEEP_PROP_LIMIT", "40")),
+        "sect_retrieve_limit": int(os.environ.get("RAG_DEEP_SECT_LIMIT", "40")),
         "final_top_n": int(os.environ.get("RAG_DEEP_FINAL_TOP", "10")),
         "context_max_chars": int(os.environ.get("RAG_DEEP_CTX_CHARS", "16000")),
         "history_pairs": 6,
