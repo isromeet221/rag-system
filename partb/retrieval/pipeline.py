@@ -60,16 +60,24 @@ import time
 from typing import Any, AsyncIterator
 
 from partb.config import (
+    ADAPTIVE_DEPTH_EXPAND_MULTIPLIER,
+    ADAPTIVE_DEPTH_INITIAL_FRACTION,
+    ADAPTIVE_DEPTH_SCORE_THRESHOLD,
     BOOST_BOTH,
     COLLECTION_PROPS,
     COLLECTION_SECTIONS,
     CONTEXT_GREEDY,
+    ENABLE_ADAPTIVE_DEPTH,
+    ENABLE_HYBRID,
     ENABLE_MMR,
     ENABLE_QUERY_CLASSIFICATION,
     ENTITY_LABELS,
     GLINER_QUERY_THRESHOLD,
+    HYBRID_POOL_MULTIPLIER,
+    HYBRID_RRF_K,
     LONG_CHUNK_WORDS,
     METADATA_DIR,
+    MIN_PARENT_SECTIONS,
     MMR_LAMBDA,
     MMR_POOL_MULTIPLIER,
     MODE_CONFIG,
@@ -81,6 +89,7 @@ from partb.config import (
     PARTA_DIR,
     PORTABLE_DIR,
     PROP_RETRIEVE_LIMIT,
+    PROP_SCORE_BOOST_WEIGHT,
     QDRANT_URL,
     QUERY_TYPE_GENERAL,
     QUERY_TYPE_OVERRIDES,
@@ -92,6 +101,7 @@ from partb.config import (
     SECT_RETRIEVE_LIMIT,
 )
 from partb.logger import log_process, logger, time_it
+from partb.retrieval.hybrid import build_and_fuse
 from partb.retrieval.prompts import get_system_prompt
 
 logging.getLogger("transformers").setLevel(logging.ERROR)
@@ -144,15 +154,41 @@ def get_neo4j():
 def get_reranker():
     global _reranker
     if _reranker is None:
-        from transformers import AutoModel
-
         cfg_path = RERANKER_DIR / "config.json"
         if not cfg_path.is_file():
             raise FileNotFoundError(f"Reranker not found at {RERANKER_DIR}")
-        _reranker = AutoModel.from_pretrained(str(RERANKER_DIR), trust_remote_code=True)
+
+        # Directly import JinaForRanking from the local modeling.py to avoid
+        # AutoModel auto_map resolution issues (transformers 5.x vs 4.x
+        # config compat). This is the same class that AutoModel would load
+        # via trust_remote_code=True, but by importing it directly we
+        # bypass the auto-class resolution entirely.
+        import importlib.util
+
+        reranker_str = str(RERANKER_DIR)
+        modeling_path = str(RERANKER_DIR / "modeling.py")
+        spec = importlib.util.spec_from_file_location(
+            "jina_reranker_modeling", modeling_path,
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(
+                f"Cannot load modeling.py from {RERANKER_DIR} — "
+                f"file may be missing or unreadable."
+            )
+        mod = importlib.util.module_from_spec(spec)
+        # Suppress sys.path pollution: exec the module but keep its own
+        # namespace clean.
+        spec.loader.exec_module(mod)
+
+        try:
+            _reranker = mod.JinaForRanking.from_pretrained(reranker_str)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load JinaForRanking from {RERANKER_DIR}. "
+                f"Error: {exc}"
+            ) from exc
         _reranker.eval()
     return _reranker
-
 
 @time_it
 def get_qdrant():
@@ -556,6 +592,97 @@ def fetch_sections_by_chunk_ids(
 
 
 @time_it
+def fetch_sections_by_section_path(
+    orphan_paths: list[tuple[str, list[str]]],
+) -> list[dict]:
+    """
+    Section 2.5.1 — Multi-parent fallback.
+
+    When a proposition's parent_chunk_id doesn't resolve to a section in Qdrant
+    (e.g., section wasn't indexed or parent_chunk_id is missing), fall back to
+    matching the proposition's section_path + book_id to find the parent section.
+
+    Scrolls all sections for matching books and filters by section_path in
+    Python, since Qdrant doesn't support exact-match on array fields.
+
+    Args:
+        orphan_paths: List of (book_id, section_path) tuples from propositions
+                      whose parent_chunk_id didn't resolve.
+
+    Returns:
+        List of matched section dicts (deduplicated by chunk_id).
+    """
+    if not orphan_paths:
+        return []
+
+    from qdrant_client import models as qm
+    client = get_qdrant()
+
+    # Collect unique (book_id, section_path_str) pairs
+    orphan_per_book: dict[str, set[str]] = {}
+    for bid, path in orphan_paths:
+        if not bid or not path:
+            continue
+        path_key = " > ".join(path)
+        orphan_per_book.setdefault(bid, set()).add(path_key)
+
+    if not orphan_per_book:
+        return []
+
+    results: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for bid, path_keys in orphan_per_book.items():
+        try:
+            scroll_filter = qm.Filter(
+                must=[qm.FieldCondition(key="book_id", match=qm.MatchValue(value=bid))]
+            ) if bid else None
+
+            # Paginate through ALL sections for this book — a book may
+            # have >1000 section points, so a single scroll page is not
+            # enough to guarantee we find a matching section_path.
+            next_offset = None
+            while True:
+                pts, next_offset = client.scroll(
+                    collection_name=COLLECTION_SECTIONS,
+                    scroll_filter=scroll_filter,
+                    limit=1000,
+                    offset=next_offset,
+                    with_payload=True,
+                    with_vectors=ENABLE_MMR,
+                )
+
+                for p in pts:
+                    pl = p.payload or {}
+                    stored_path = pl.get("section_path") or []
+                    stored_key = " > ".join(stored_path)
+                    if stored_key in path_keys:
+                        cid = pl.get("chunk_id") or str(p.id)
+                        if cid in seen_ids:
+                            continue
+                        seen_ids.add(cid)
+                        vec = getattr(p, "vector", None) if ENABLE_MMR else None
+                        results.append(_parse_payload(pl, str(p.id), vector=vec))
+
+                if next_offset is None or not pts:
+                    break
+        except Exception as exc:
+            logging.warning(
+                "[2.5.1] Section path fallback scroll failed for %s: %s", bid, exc
+            )
+
+    if results:
+        total_orphans = sum(len(paths) for paths in orphan_per_book.values())
+        logging.info(
+            "[2.5.1] Section path fallback | orphans=%d matched=%d",
+            total_orphans,
+            len(results),
+        )
+
+    return results
+
+
+@time_it
 def search_sections_direct(
     query: str, book_ids: list[str], section_names: list[str], limit: int
 ) -> list[dict]:
@@ -606,8 +733,19 @@ def search_sections_direct(
 
 @time_it
 def merge_candidates(
-    parent_sections: list[dict], direct_sections: list[dict], neo4j_names: list[str]
+    parent_sections: list[dict],
+    direct_sections: list[dict],
+    neo4j_names: list[str],
+    prop_score_map: dict[str, float] | None = None,
 ) -> list[dict]:
+    """
+    Merges parent and direct section candidates with deduplication.
+
+    Section 2.6 — Weighted Fusion of Proposition and Section Scores:
+    If prop_score_map is provided, sections whose chunk_id exists in the map
+    get a prop_child_score field (the max proposition score among its children).
+    This score is later used as an additional boost in rerank_candidates().
+    """
     by_id: dict[str, dict] = {}
     for s in parent_sections + direct_sections:
         cid = s.get("chunk_id", "")
@@ -615,6 +753,9 @@ def merge_candidates(
             continue
         if cid not in by_id:
             by_id[cid] = s.copy()
+            # Section 2.6: store max proposition child score if available
+            if prop_score_map and cid in prop_score_map:
+                by_id[cid]["prop_child_score"] = prop_score_map[cid]
         else:
             by_id[cid]["from_qdrant"] = by_id[cid].get("from_qdrant") or s.get(
                 "from_qdrant"
@@ -627,6 +768,11 @@ def merge_candidates(
                     by_id[cid][field] = s[field]
             if (s.get("qdrant_score") or 0) > (by_id[cid].get("qdrant_score") or 0):
                 by_id[cid]["qdrant_score"] = s["qdrant_score"]
+            # Section 2.6: keep higher of the two proposition scores
+            existing_prop = prop_score_map.get(cid, 0.0) if prop_score_map else 0.0
+            current_prop = by_id[cid].get("prop_child_score", 0.0)
+            if existing_prop > current_prop:
+                by_id[cid]["prop_child_score"] = existing_prop
     if neo4j_names:
         for s in by_id.values():
             if any(n in (s.get("section_path") or []) for n in neo4j_names if n):
@@ -658,6 +804,10 @@ def rerank_candidates(query: str, candidates: list[dict], top_n: int, boost_mult
             candidates[idx]["rerank_score"] = r["relevance_score"]
             if candidates[idx].get("from_qdrant") and candidates[idx].get("from_neo4j"):
                 candidates[idx]["rerank_score"] += BOOST_BOTH * boost_mult
+            # Section 2.6: proposition child score boost
+            prop_score = candidates[idx].get("prop_child_score", 0.0)
+            if prop_score > 0:
+                candidates[idx]["rerank_score"] += prop_score * PROP_SCORE_BOOST_WEIGHT * boost_mult
     except Exception as exc:
         logging.warning("Reranker failed (%s); using Qdrant scores.", exc)
         for c in candidates:
@@ -1599,25 +1749,227 @@ def retrieve_bundle(query: str, book_ids: list[str], mode: str) -> dict[str, Any
             effective_boost_mult, effective_page_range, cross_book,
         )
 
+    # ── Adaptive depth: use conservative limits for first pass ──────────────
+    if ENABLE_ADAPTIVE_DEPTH:
+        first_prop_lim = max(5, int(prop_lim * ADAPTIVE_DEPTH_INITIAL_FRACTION))
+        first_sect_lim = max(5, int(sect_lim * ADAPTIVE_DEPTH_INITIAL_FRACTION))
+        logger.info(
+            "[ADAPTIVE] first pass | prop_lim=%d (normal=%d) | sect_lim=%d (normal=%d)",
+            first_prop_lim, prop_lim, first_sect_lim, sect_lim,
+        )
+    else:
+        first_prop_lim = prop_lim
+        first_sect_lim = sect_lim
+
     # Steps 1-6: use effective_book_ids instead of original book_ids
-    prop_hits = search_propositions(query, effective_book_ids, prop_lim)
+    prop_hits = search_propositions(query, effective_book_ids, first_prop_lim)
     entity_terms = extract_query_entities(query)
     neo4j_section_names = neo4j_sections_for_entities(effective_book_ids, entity_terms)
     specs = neo4j_specs_for_terms(effective_book_ids, entity_terms)
 
+    # ── Step 4: Fetch parent sections from propositions ─────────────────────
     parent_chunk_ids = list(
         {p["parent_chunk_id"] for p in prop_hits if p.get("parent_chunk_id")}
     )
     parent_sections = fetch_sections_by_chunk_ids(parent_chunk_ids, effective_book_ids)
+
+    # ── Section 2.6: Build proposition score map for weighted fusion ─────────
+    # Record the max proposition score per parent_chunk_id. Sections found
+    # via this path will get a prop_child_score boost in rerank_candidates().
+    prop_score_map: dict[str, float] = {}
+    for p in prop_hits:
+        pid = p.get("parent_chunk_id")
+        score = p.get("score", 0.0)
+        if pid and isinstance(score, (int, float)):
+            if pid not in prop_score_map or score > prop_score_map[pid]:
+                prop_score_map[pid] = float(score)
+
+    if prop_score_map:
+        logger.debug("[2.6] prop_score_map | %d parent chunk IDs scored", len(prop_score_map))
+
+    # ── Section 2.5.1: Multi-parent section_path fallback ───────────────────
+    # Identify propositions whose parent_chunk_id didn't resolve to a section.
+    found_parent_ids: set[str] = {
+        s.get("chunk_id", "") for s in parent_sections if s.get("chunk_id")
+    }
+    orphan_paths: list[tuple[str, list[str]]] = []
+    for p in prop_hits:
+        pid = p.get("parent_chunk_id")
+        # A proposition is an orphan when its parent_chunk_id is missing
+        # entirely OR when it exists but didn't resolve to a section.
+        is_orphan = (not pid) or (pid not in found_parent_ids)
+        if is_orphan:
+            sp = p.get("section_path")
+            bid = p.get("book_id")
+            if sp and bid:
+                orphan_paths.append((bid, sp))
+    if orphan_paths:
+        path_fallback = fetch_sections_by_section_path(orphan_paths)
+        if path_fallback:
+            parent_sections.extend(path_fallback)
+            logger.info(
+                "[2.5.1] Section path fallback | matched %d sections from %d orphan props",
+                len(path_fallback), len(orphan_paths),
+            )
+        else:
+            logger.debug(
+                "[2.5.1] Section path fallback | no matches for %d orphan props",
+                len(orphan_paths),
+            )
+
     direct_sections = search_sections_direct(
-        query, effective_book_ids, neo4j_section_names, sect_lim
+        query, effective_book_ids, neo4j_section_names, first_sect_lim
     )
-    candidates = merge_candidates(parent_sections, direct_sections, neo4j_section_names)
+
+    # ── Section 2.5.2: Supplement direct search if < MIN_PARENT_SECTIONS ─────
+    total_parent = len(parent_sections)
+    if total_parent < MIN_PARENT_SECTIONS:
+        supplement_extra = (MIN_PARENT_SECTIONS - total_parent) * 5
+        supplement_limit = first_sect_lim + supplement_extra
+        logger.info(
+            "[2.5.2] Only %d parent sections found (min=%d); supplementing "
+            "direct search extra=%d limit=%d",
+            total_parent, MIN_PARENT_SECTIONS, supplement_extra, supplement_limit,
+        )
+        supplement_sections = search_sections_direct(
+            query, effective_book_ids, neo4j_section_names, supplement_limit,
+        )
+        # Deduplicate against existing direct_sections
+        existing_ids: set[str] = {s.get("chunk_id", "") for s in direct_sections if s.get("chunk_id")}
+        added = 0
+        for s in supplement_sections:
+            cid = s.get("chunk_id", "")
+            if cid and cid not in existing_ids:
+                direct_sections.append(s)
+                existing_ids.add(cid)
+                added += 1
+        if added:
+            logger.info(
+                "[2.5.2] Supplement added %d/%d extra sections",
+                added, len(supplement_sections),
+            )
+
+    # ── Step 4b: Hybrid Search Fusion (Vector + BM25) ────────────────────────
+    # Fuse vector search results with BM25 keyword results using RRF to catch
+    # exact-term matches that vector search may miss.
+    if ENABLE_HYBRID:
+        bm25_pool = first_sect_lim * HYBRID_POOL_MULTIPLIER
+        fused = build_and_fuse(
+            query,
+            direct_sections,
+            qdrant_client=get_qdrant(),
+            book_ids=effective_book_ids or None,
+            top_k=bm25_pool,
+            rrf_k=HYBRID_RRF_K,
+        )
+        if fused:
+            direct_sections = fused
+
+    candidates = merge_candidates(
+        parent_sections, direct_sections, neo4j_section_names, prop_score_map
+    )
 
     # Step 6: Rerank — fetch a larger pool when MMR is enabled so there
     # are enough candidates for diversity selection.
     pool_n = effective_final_top_n * MMR_POOL_MULTIPLIER if ENABLE_MMR else effective_final_top_n
     top_reranked = rerank_candidates(query, candidates, pool_n, boost_mult=effective_boost_mult)
+
+    # ── Adaptive depth: second pass (expanded) if top score is too low ───────
+    # Expand when: (a) reranked results exist but score is below threshold,
+    # or (b) the reduced first pass found no candidates at all.
+    if (
+        ENABLE_ADAPTIVE_DEPTH
+        and (
+            not top_reranked
+            or top_reranked[0].get("rerank_score", 0.0) < ADAPTIVE_DEPTH_SCORE_THRESHOLD
+        )
+    ):
+        expanded_prop_lim = max(first_prop_lim + 1, int(first_prop_lim * ADAPTIVE_DEPTH_EXPAND_MULTIPLIER))
+        expanded_sect_lim = max(first_sect_lim + 1, int(first_sect_lim * ADAPTIVE_DEPTH_EXPAND_MULTIPLIER))
+        logger.info(
+            "[ADAPTIVE] second pass | top_score=%.4f < %.2f | "
+            "expanding prop: %d->%d | sect: %d->%d",
+            top_reranked[0].get("rerank_score", 0.0) if top_reranked else 0.0,
+            ADAPTIVE_DEPTH_SCORE_THRESHOLD,
+            first_prop_lim, expanded_prop_lim,
+            first_sect_lim, expanded_sect_lim,
+        )
+
+        # Re-run proposition search with expanded limits
+        expanded_prop_hits = search_propositions(query, effective_book_ids, expanded_prop_lim)
+        # Re-run section search with expanded limits
+        expanded_direct = search_sections_direct(
+            query, effective_book_ids, neo4j_section_names, expanded_sect_lim,
+        )
+        # Fetch parent sections for any new proposition IDs
+        all_expanded_parent_ids = list(
+            {p["parent_chunk_id"] for p in expanded_prop_hits if p.get("parent_chunk_id")}
+        )
+        new_ids_to_fetch = [cid for cid in all_expanded_parent_ids if cid not in set(parent_chunk_ids)]
+        expanded_parent_sections = fetch_sections_by_chunk_ids(new_ids_to_fetch, effective_book_ids)
+
+        # Section 2.5.1: section-path fallback for expanded orphans too
+        expanded_found_ids: set[str] = {
+            s.get("chunk_id", "") for s in expanded_parent_sections if s.get("chunk_id")
+        }
+        expanded_orphan_paths: list[tuple[str, list[str]]] = []
+        for p in expanded_prop_hits:
+            pid = p.get("parent_chunk_id")
+            is_orphan = (not pid) or (pid not in expanded_found_ids and pid not in set(parent_chunk_ids))
+            if is_orphan:
+                sp = p.get("section_path")
+                bid = p.get("book_id")
+                if sp and bid:
+                    expanded_orphan_paths.append((bid, sp))
+        if expanded_orphan_paths:
+            expanded_path_fallback = fetch_sections_by_section_path(expanded_orphan_paths)
+            if expanded_path_fallback:
+                expanded_parent_sections.extend(expanded_path_fallback)
+                logger.info(
+                    "[2.5.1] Expanded section path fallback | matched %d sections from %d orphan props",
+                    len(expanded_path_fallback), len(expanded_orphan_paths),
+                )
+
+        # Hybrid fusion on expanded results if enabled
+        if ENABLE_HYBRID:
+            bm25_pool_expanded = expanded_sect_lim * HYBRID_POOL_MULTIPLIER
+            fused = build_and_fuse(
+                query,
+                expanded_direct,
+                qdrant_client=get_qdrant(),
+                book_ids=effective_book_ids or None,
+                top_k=bm25_pool_expanded,
+                rrf_k=HYBRID_RRF_K,
+            )
+            if fused:
+                expanded_direct = fused
+
+        # Section 2.6: merge expanded proposition scores into prop_score_map
+        # so that sections discovered only from expanded hits also receive the
+        # proposition-child boost during reranking.
+        for p in expanded_prop_hits:
+            pid = p.get("parent_chunk_id")
+            score = p.get("score", 0.0)
+            if pid and isinstance(score, (int, float)):
+                if pid not in prop_score_map or score > prop_score_map[pid]:
+                    prop_score_map[pid] = float(score)
+
+        # Merge expanded results with existing candidates and re-rerank
+        expanded_candidates = merge_candidates(
+            parent_sections + expanded_parent_sections,
+            direct_sections + expanded_direct,
+            neo4j_section_names,
+            prop_score_map,  # Section 2.6: now includes expanded scores
+        )
+        expanded_pool_n = max(pool_n, effective_final_top_n * ADAPTIVE_DEPTH_EXPAND_MULTIPLIER)
+        top_reranked = rerank_candidates(
+            query, expanded_candidates, expanded_pool_n, boost_mult=effective_boost_mult,
+        )
+        logger.info(
+            "[ADAPTIVE] after expand | candidates: %d->%d | after rerank: %d | top_score=%.4f",
+            len(candidates), len(expanded_candidates), len(top_reranked),
+            top_reranked[0].get("rerank_score", 0.0) if top_reranked else 0.0,
+        )
 
     # Step 6b: MMR diversity
     if ENABLE_MMR and len(top_reranked) > effective_final_top_n:
