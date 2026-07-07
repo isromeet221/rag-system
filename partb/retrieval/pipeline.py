@@ -144,15 +144,41 @@ def get_neo4j():
 def get_reranker():
     global _reranker
     if _reranker is None:
-        from transformers import AutoModel
-
         cfg_path = RERANKER_DIR / "config.json"
         if not cfg_path.is_file():
             raise FileNotFoundError(f"Reranker not found at {RERANKER_DIR}")
-        _reranker = AutoModel.from_pretrained(str(RERANKER_DIR), trust_remote_code=True)
+
+        # Directly import JinaForRanking from the local modeling.py to avoid
+        # AutoModel auto_map resolution issues (transformers 5.x vs 4.x
+        # config compat). This is the same class that AutoModel would load
+        # via trust_remote_code=True, but by importing it directly we
+        # bypass the auto-class resolution entirely.
+        import importlib.util
+
+        reranker_str = str(RERANKER_DIR)
+        modeling_path = str(RERANKER_DIR / "modeling.py")
+        spec = importlib.util.spec_from_file_location(
+            "jina_reranker_modeling", modeling_path,
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(
+                f"Cannot load modeling.py from {RERANKER_DIR} — "
+                f"file may be missing or unreadable."
+            )
+        mod = importlib.util.module_from_spec(spec)
+        # Suppress sys.path pollution: exec the module but keep its own
+        # namespace clean.
+        spec.loader.exec_module(mod)
+
+        try:
+            _reranker = mod.JinaForRanking.from_pretrained(reranker_str)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load JinaForRanking from {RERANKER_DIR}. "
+                f"Error: {exc}"
+            ) from exc
         _reranker.eval()
     return _reranker
-
 
 @time_it
 def get_qdrant():
