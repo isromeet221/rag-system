@@ -105,6 +105,15 @@ RERANK_MIN_SCORE = float(os.environ.get("RAG_RERANK_MIN_SCORE", "0.0"))
 RERANK_LOG_DISTRIBUTION_EVERY = int(os.environ.get("RAG_RERANK_LOG_DIST_EVERY", "1"))
 
 
+# ── Proposition-to-Section mapping (2.5 & 2.6) ────────────────────────
+# Weight for proposition-child score boost in reranking (2.6).
+# When a section was found via a proposition's parent_chunk_id, the max
+# proposition score is stored and used as an additional boost in rerank.
+PROP_SCORE_BOOST_WEIGHT = float(os.environ.get("RAG_PROP_SCORE_BOOST", "0.10"))
+# Minimum parent sections found before we supplement with more direct search (2.5.2).
+MIN_PARENT_SECTIONS = int(os.environ.get("RAG_MIN_PARENT_SECTIONS", "3"))
+
+
 # ── Adaptive Retrieval Depth ──────────────────────────────────────────────
 # Two-pass: start conservative, expand if reranker scores are low.
 ENABLE_ADAPTIVE_DEPTH = os.environ.get("RAG_ENABLE_ADAPTIVE_DEPTH", "0") == "1"
