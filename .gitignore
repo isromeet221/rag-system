@@ -12,3 +12,4 @@ temp_extract*
 *.tar.gz
 .*zip
 workers/logs/text/
+.env

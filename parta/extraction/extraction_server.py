@@ -46,7 +46,7 @@ app = FastAPI(title="Unified Job Server")
 SPAWN_MODAL_WORKERS = True
 MODAL_WORKERS_PER_JOB = 5
 # Replace this with your Ngrok or public URL so the cloud workers can reach this local server (e.g., "https://xyz.ngrok-free.app")
-PUBLIC_SERVER_URL = "https://cpzl92xl.taskhub.me"
+PUBLIC_SERVER_URL = "https://jalisa-unreputed-cleta.ngrok-free.dev"
 # ──────────────────────────────────────────────────────────────────────────────
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -325,13 +325,15 @@ def _submit_result(
                 )
             else:
                 job["attempt_count"] += 1
+                error_msg = payload.get("error", "Unknown error")
                 logger.warning(
-                    "%s job %s failed by %s (attempt %d/%d)",
+                    "%s job %s failed by %s (attempt %d/%d) Error: %s",
                     job["job_kind"].upper(),
                     jid,
                     worker_id,
                     job["attempt_count"],
                     MAX_ATTEMPTS,
+                    error_msg
                 )
 
                 if job["attempt_count"] >= MAX_ATTEMPTS:

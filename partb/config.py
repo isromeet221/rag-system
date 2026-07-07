@@ -6,12 +6,15 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # Repo layout: .../RAG/partb/this_file.py → repo root is parent of partb/
 PARTB_DIR = Path(__file__).resolve().parent
+load_dotenv(PARTB_DIR / ".env")
 REPO_ROOT = PARTB_DIR.parent
 PARTA_DIR =REPO_ROOT / "parta"
 PORTABLE_DIR = PARTA_DIR / "portable"
-RERANKER_DIR = PORTABLE_DIR / "reranker"
+RERANKER_DIR = PORTABLE_DIR / "jina-reranker-v3"
 
 # Part A data paths (page viewer)
 PARTA_DATA_DIR = PARTA_DIR / "data"
@@ -21,7 +24,7 @@ QDRANT_DIR = PARTA_DATA_DIR / "qdrant"
 
 
 # Mongo (same as Part A defaults)
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
+MONGO_URI = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 MONGO_DB =  "rag_system"
 
 
@@ -33,7 +36,7 @@ JWT_EXPIRE_HOURS =8
 # LiteLLM OpenAI-compatible proxy (Master)
 LITELLM_BASE_URL = "http://127.0.0.1:4000/v1"
 # LITELLM_BASE_URL = "https://api.mistral.ai/v1"
-LITELLM_API_KEY = os.environ.get("LITELLM_API_KEY", "")
+LITELLM_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
 
 # If "1", stream from local Ollama /api/generate instead (dev fallback)
 USE_OLLAMA_DIRECT = False
@@ -47,8 +50,8 @@ COLLECTION_SECTIONS = "RAG_sections"
 
 
 # NEO4J_URI = "bolt://localhost:7687"
-NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
+NEO4J_URI = os.environ.get("NEO4J_URL", "bolt://localhost:7687")
+NEO4J_USER = os.environ.get("NEO4J_USERNAME", "neo4j")
 NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "")
 
 import json
@@ -120,7 +123,9 @@ ENABLE_ADAPTIVE_DEPTH = os.environ.get("RAG_ENABLE_ADAPTIVE_DEPTH", "0") == "1"
 # First pass uses this fraction of normal proposition/section limits.
 ADAPTIVE_DEPTH_INITIAL_FRACTION = float(os.environ.get("RAG_ADAPTIVE_DEPTH_FRACTION", "0.5"))
 # If top reranker score is below threshold on first pass, trigger second pass.
-ADAPTIVE_DEPTH_SCORE_THRESHOLD = float(os.environ.get("RAG_ADAPTIVE_DEPTH_THRESHOLD", "0.5"))
+# Jina v3 produces raw logit scores (NOT sigmoid 0-1), so typical good scores
+# range from 0.2 to 0.5. Use a low threshold to avoid unnecessary second passes.
+ADAPTIVE_DEPTH_SCORE_THRESHOLD = float(os.environ.get("RAG_ADAPTIVE_DEPTH_THRESHOLD", "0.15"))
 # Multiply first-pass limits by this for the second pass.
 ADAPTIVE_DEPTH_EXPAND_MULTIPLIER = int(os.environ.get("RAG_ADAPTIVE_DEPTH_MULTIPLIER", "2"))
 
@@ -182,10 +187,11 @@ CONTEXT_GREEDY = os.environ.get("RAG_CONTEXT_GREEDY", "1") == "1"
 @time_it
 def apply_parta_service_env() -> None:
     """Ensure parta modules see DB URLs even if only Part B is started."""
-    os.environ.setdefault("RAG_QDRANT_URL", "http://localhost:6333")
-    os.environ.setdefault("RAG_NEO4J_URI", os.environ.get("RAG_NEO4J_URI", "bolt://localhost:7687"))
-    os.environ.setdefault("RAG_NEO4J_USER", os.environ.get("RAG_NEO4J_USER", "neo4j"))
-    os.environ.setdefault("RAG_NEO4J_PASSWORD", os.environ.get("RAG_NEO4J_PASSWORD", "sac@1234"))
+    os.environ.setdefault("RAG_QDRANT_URL", os.environ.get("QDRANT_URL", "http://localhost:6333"))
+    os.environ.setdefault("RAG_QDRANT_API_KEY", os.environ.get("QDRANT_API_KEY", ""))
+    os.environ.setdefault("RAG_NEO4J_URI", os.environ.get("NEO4J_URL", "bolt://localhost:7687"))
+    os.environ.setdefault("RAG_NEO4J_USER", os.environ.get("NEO4J_USERNAME", "neo4j"))
+    os.environ.setdefault("RAG_NEO4J_PASSWORD", os.environ.get("NEO4J_PASSWORD", ""))
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")

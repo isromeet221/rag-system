@@ -57,9 +57,8 @@ async def lifespan(app: FastAPI):
         print(f"[KRUTRIM] ERROR: {exc}")
 
     from partb.retrieval.pipeline import warm_models
-    print("[KRUTRIM] Warming models")
+    print("[KRUTRIM] Warming DB connections + ML models (Nomic, GLiNER, Jina Reranker)…")
     asyncio.create_task(asyncio.to_thread(warm_models))
-    print("[KRUTRIM] ")
     yield
     print("[KRUTRIM] shutting down ")
 

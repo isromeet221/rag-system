@@ -57,7 +57,10 @@ import logging
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, AsyncIterator
+
+import numpy as np
 
 from partb.config import (
     ADAPTIVE_DEPTH_EXPAND_MULTIPLIER,
@@ -105,6 +108,17 @@ from partb.retrieval.hybrid import build_and_fuse
 from partb.retrieval.prompts import get_system_prompt
 
 logging.getLogger("transformers").setLevel(logging.ERROR)
+
+import warnings
+warnings.filterwarnings(
+    "ignore", 
+    category=UserWarning, 
+    module="transformers.convert_slow_tokenizer"
+)
+warnings.filterwarnings(
+    "ignore",
+    module="jwt.api_jwt"
+)
 
 if str(PARTA_DIR) not in sys.path:
     sys.path.insert(0, str(PARTA_DIR))
@@ -221,6 +235,23 @@ def get_nomic():
 def warm_models() -> None:
     get_neo4j()
     get_qdrant()
+    # Pre-load ML models to eliminate cold-start penalty on first query.
+    # Without this, first query pays ~33s for model deserialization.
+    try:
+        get_nomic()
+        logger.info("[WARM] Nomic embeddings loaded")
+    except Exception as exc:
+        logger.warning("[WARM] Nomic load failed (non-fatal): %s", exc)
+    try:
+        get_gliner()
+        logger.info("[WARM] GLiNER loaded")
+    except Exception as exc:
+        logger.warning("[WARM] GLiNER load failed (non-fatal): %s", exc)
+    try:
+        get_reranker()
+        logger.info("[WARM] Jina Reranker v3 loaded")
+    except Exception as exc:
+        logger.warning("[WARM] Reranker load failed (non-fatal): %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -795,13 +826,22 @@ def rerank_candidates(query: str, candidates: list[dict], top_n: int, boost_mult
     """
     if not candidates:
         return []
+        
+    # --- CPU OPTIMIZATION ---
+    # We pre-sort by base qdrant_score and keep only the requested pool size (top_n)
+    # for reranking to avoid excessive CPU time on Jina v3.
+    candidates = sorted(candidates, key=lambda x: x.get("qdrant_score") or 0.0, reverse=True)
+    if len(candidates) > top_n:
+        candidates = candidates[:top_n]
+
     try:
         reranker = get_reranker()
         texts = [c.get("text", "") or "" for c in candidates]
-        results = reranker.rerank(query, texts)
+        # Restrict max_doc_length so it doesn't process 2000+ token chunks which hangs CPU
+        results = reranker.rerank(query, texts, max_doc_length=512, max_query_length=256)
         for r in results:
             idx = r["index"]
-            candidates[idx]["rerank_score"] = r["relevance_score"]
+            candidates[idx]["rerank_score"] = float(r["relevance_score"])
             if candidates[idx].get("from_qdrant") and candidates[idx].get("from_neo4j"):
                 candidates[idx]["rerank_score"] += BOOST_BOTH * boost_mult
             # Section 2.6: proposition child score boost
@@ -1276,10 +1316,8 @@ def _build_context_greedy(
     }
 
     # ── Helper to format a text chunk with label and long-chunk handling ──
-    _greedy_reranker = None  # local ref for long-chunk segmentation
 
     def _format_text_chunk(c: dict) -> str | None:
-        nonlocal _greedy_reranker
         text = (c.get("text") or "").strip()
         if not text:
             return None
@@ -1297,7 +1335,9 @@ def _build_context_greedy(
         if len(text.split()) <= LONG_CHUNK_WORDS:
             return label + text
 
-        # Long chunk: segment on sentences, rerank segments, pick best
+        # Long chunk: segment on sentences, pick best via Nomic embedding similarity.
+        # Uses the already-loaded Nomic model (~10ms) instead of the heavy Jina
+        # reranker (~3s per call on CPU). Handles new/unseen chunks semantically.
         sents = _sentences(text)
         segs: list[str] = []
         cur = ""
@@ -1314,13 +1354,25 @@ def _build_context_greedy(
             return label + text[:4000]
 
         try:
-            if _greedy_reranker is None:
-                _greedy_reranker = get_reranker()
-            seg_results = _greedy_reranker.rerank(query, segs)
-            best_i = seg_results[0]["index"]
-            return label + segs[best_i]
+            nomic = get_nomic()
+            q_emb = nomic.encode("search_query: " + query, show_progress_bar=False)
+            seg_embs = nomic.encode(
+                ["search_document: " + s for s in segs], show_progress_bar=False
+            )
+            # Cosine similarity (vectors are already normalized by Nomic)
+            sims = seg_embs @ q_emb
+            best_i = int(np.argmax(sims))
         except Exception:
-            return label + segs[0][:4000]
+            # Fallback to keyword overlap if Nomic fails
+            query_terms = set(query.lower().split())
+            best_i = 0
+            best_overlap = -1
+            for i, seg in enumerate(segs):
+                overlap = len(query_terms & set(seg.lower().split()))
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_i = i
+        return label + segs[best_i]
 
     # ── Build item pool ────────────────────────────────────────────────
     # Each item: {text, score, density, type, chunk_id, expansion_idx}
@@ -1579,8 +1631,6 @@ def build_context(
     )
     ordered = table_chunks + text_chunks
 
-    _reranker = None
-
     for c in ordered:
         chunk_type = c.get("chunk_type", "text")
         pr = c.get("page_range") or [0, 0]
@@ -1635,13 +1685,25 @@ def build_context(
                     block = label + text[:4000]
                 else:
                     try:
-                        if _reranker is None:
-                            _reranker = get_reranker()
-                        seg_results = _reranker.rerank(query, segs)
-                        best_i = seg_results[0]["index"]
+                        nomic = get_nomic()
+                        q_emb = nomic.encode("search_query: " + query, show_progress_bar=False)
+                        seg_embs = nomic.encode(
+                            ["search_document: " + s for s in segs], show_progress_bar=False
+                        )
+                        import numpy as np
+                        sims = seg_embs @ q_emb
+                        best_i = int(np.argmax(sims))
                         block = label + segs[best_i]
                     except Exception:
-                        block = label + segs[0][:4000]
+                        query_terms = set(query.lower().split())
+                        best_i = 0
+                        best_overlap = -1
+                        for i, seg in enumerate(segs):
+                            overlap = len(query_terms & set(seg.lower().split()))
+                            if overlap > best_overlap:
+                                best_overlap = overlap
+                                best_i = i
+                        block = label + segs[best_i]
 
             if total + len(block) > max_chars:
                 block = block[: max(0, max_chars - total)]
@@ -1762,8 +1824,14 @@ def retrieve_bundle(query: str, book_ids: list[str], mode: str) -> dict[str, Any
         first_sect_lim = sect_lim
 
     # Steps 1-6: use effective_book_ids instead of original book_ids
-    prop_hits = search_propositions(query, effective_book_ids, first_prop_lim)
-    entity_terms = extract_query_entities(query)
+    # Run proposition search and entity extraction in parallel — they are
+    # independent (Nomic+Qdrant vs GLiNER) and together cost ~30s cold / ~2s warm.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_props = pool.submit(search_propositions, query, effective_book_ids, first_prop_lim)
+        fut_entities = pool.submit(extract_query_entities, query)
+        prop_hits = fut_props.result()
+        entity_terms = fut_entities.result()
+
     neo4j_section_names = neo4j_sections_for_entities(effective_book_ids, entity_terms)
     specs = neo4j_specs_for_terms(effective_book_ids, entity_terms)
 

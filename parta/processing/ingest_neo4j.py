@@ -69,11 +69,15 @@ logging.getLogger("transformers").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HARDCODED CONFIGURATION — no environment variables per project rules
-# ─────────────────────────────────────────────────────────────────────────────
-NEO4J_URI  = "neo4j+s://95a8070a.databases.neo4j.io"
-NEO4J_AUTH = ("95a8070a", "39TVuQIDdPNbNnVNgiWGzi_SVl17V-8hetw54nLyI0M")
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+_env_path = Path(__file__).resolve().parent.parent.parent / "partb" / ".env"
+load_dotenv(_env_path)
+
+NEO4J_URI  = os.environ.get("NEO4J_URL", "")
+NEO4J_AUTH = (os.environ.get("NEO4J_USERNAME", ""), os.environ.get("NEO4J_PASSWORD", ""))
 
 import json
 import collections
@@ -335,7 +339,7 @@ def _load_gliner(base_dir: Path):
 
     logger.info(f"[NEO4J] Loading GLiNER from {model_dir}...")
     t0 = time.time()
-    model = GLiNER.from_pretrained(str(model_dir), local_files_only=True).to("cpu")
+    model = GLiNER.from_pretrained(str(model_dir), local_files_only=False).to("cpu")
     t1 = time.time()
     logger.info(f"[NEO4J] Model loaded: GLiNER in {t1 - t0:.2f}s")
     return model

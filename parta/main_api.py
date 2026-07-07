@@ -56,11 +56,17 @@ from parta.logger import async_time_it, logger, time_it
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+import os
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent
+# Load .env from partb directory
+load_dotenv(BASE_DIR.parent / "partb" / ".env")
+
 DATA_RAW_DIR = BASE_DIR / "data" / "raw"
 DATA_RAW_DIR.mkdir(parents=True, exist_ok=True)
 
-MONGO_URI = "mongodb+srv://redrepter:ncq4fIo18UK948dV@krutrim.li124fs.mongodb.net/?appName=krutrim"
+MONGO_URI = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 MONGO_DB_NAME = "rag_system"
 
 JWT_SECRET = "ISRO_RAG_SECRET_CHANGE_IN_PROD"
