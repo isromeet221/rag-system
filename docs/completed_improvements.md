@@ -1,6 +1,6 @@
 # KRUTRIM RAG — Completed Retrieval Pipeline Improvements
 
-> **Last updated**: 2026-07-06
+> **Last updated**: 2026-07-07
 > **Scope**: Part B retrieval pipeline (`partb/retrieval/pipeline.py` + supporting modules)
 
 ---
@@ -8,13 +8,17 @@
 ## Table of Contents
 
 1. [Query Classification & Routing (1.2)](#12-query-classification--routing)
-2. [Greedy Context Budget Allocation (4.1a)](#41a-greedy-context-budget-allocation)
-3. [Markdown Table Preservation (4.3a)](#43a-markdown-table-preservation)
-4. [Hierarchical Context — Summary + Detail (4.4)](#44-hierarchical-context--summary--detail)
-5. [Dynamic System Prompt per Query Type (5.2)](#52-dynamic-system-prompt-per-query-type)
-6. [Citation Format Enhancement (5.4)](#54-citation-format-enhancement)
-7. [MMR Diversity Selection (2.3)](#23-mmr-diversity-selection)
-8. [Reranker Upgrade — Jina Reranker v3 (3.1)](#31-reranker-upgrade--jina-reranker-v3)
+2. [Hybrid Search — Vector + BM25 (2.1)](#21-hybrid-search--vector--bm25)
+3. [MMR Diversity Selection (2.3)](#23-mmr-diversity-selection)
+4. [Adaptive Retrieval Depth (2.4)](#24-adaptive-retrieval-depth)
+5. [Proposition-to-Section Mapping Improvement (2.5)](#25-proposition-to-section-mapping-improvement)
+6. [Weighted Fusion of Proposition and Section Scores (2.6)](#26-weighted-fusion-of-proposition-and-section-scores)
+7. [Reranker Upgrade — Jina Reranker v3 (3.1)](#31-reranker-upgrade--jina-reranker-v3)
+8. [Greedy Context Budget Allocation (4.1a)](#41a-greedy-context-budget-allocation)
+9. [Markdown Table Preservation (4.3a)](#43a-markdown-table-preservation)
+10. [Hierarchical Context — Summary + Detail (4.4)](#44-hierarchical-context--summary--detail)
+11. [Dynamic System Prompt per Query Type (5.2)](#52-dynamic-system-prompt-per-query-type)
+12. [Citation Format Enhancement (5.4)](#54-citation-format-enhancement)
 
 ---
 
@@ -49,6 +53,37 @@ Added a `classify_query()` function that categorizes user queries into one of fo
 
 ---
 
+## 2.1 Hybrid Search — Vector + BM25
+
+**Commit**: `5e5989e`
+**Files**: `partb/retrieval/pipeline.py`, `partb/retrieval/hybrid.py`, `partb/config.py`
+
+### What was done
+
+Added a BM25 keyword search pass that runs alongside the vector search, fusing results using Reciprocal Rank Fusion (RRF). This catches exact-term matches that vector search may miss (e.g., "PSLV-C50" vs "PSLV C50").
+
+### How it works
+
+```python
+RRF score = 1/(k + rank_vector(d)) + 1/(k + rank_bm25(d))
+```
+
+1. Scrolled all sections from Qdrant for the active book IDs
+2. Built an in-memory BM25 index from section text
+3. Ranked sections by BM25 relevance against the query
+4. Fused BM25 and vector results using configurable RRF constant `k`
+5. Merged back into `direct_sections` for downstream processing
+
+### Key implementation details
+
+- Controlled by `ENABLE_HYBRID` config flag (default: off)
+- BM25 index built on-demand from Qdrant scroll — no separate index to maintain
+- RRF constant `k` configurable via `HYBRID_RRF_K` (default: 60)
+- Pool multiplier controls how many extra candidates per path to allow RRF room to re-rank
+- Implemented in `partb/retrieval/hybrid.py`: `build_and_fuse()` function
+
+---
+
 ## 2.3 MMR Diversity Selection
 
 **Commit**: `be64f91`
@@ -76,27 +111,106 @@ MMR = λ * score(c) - (1-λ) * max sim(c, selected)
 
 ---
 
-## 3.1 Reranker Upgrade — Jina Reranker v3
+## 2.4 Adaptive Retrieval Depth
 
-**Commit**: `3c69fca`
-**Files**: `partb/service/`
+**Commit**: `3911387`
+**Files**: `partb/retrieval/pipeline.py`, `partb/config.py`
 
 ### What was done
 
-Upgraded from `BAAI/bge-reranker-base` to `jina-reranker-v3` for the listwise reranking approach. This model provides better cross-attention quality and supports listwise scoring (scores all candidates relative to each other, not just independently).
+Replaced fixed retrieval limits with a two-pass adaptive approach. Simple queries use fewer candidates (lower latency), while hard queries automatically expand to find more relevant content.
+
+### How it works
+
+1. **First pass**: Retrieves propositions and sections at a conservative limit (50% of normal by default)
+2. **Rerank check**: If the top reranker score is above `ADAPTIVE_DEPTH_SCORE_THRESHOLD`, the results are good enough — done
+3. **Second pass**: If the top score is too low, re-retrieve with expanded limits (2x by default), merging new results with existing candidates
+
+### Key implementation details
+
+- Controlled by `ENABLE_ADAPTIVE_DEPTH` config flag (default: off)
+- First pass fraction: `ADAPTIVE_DEPTH_INITIAL_FRACTION` (default: 0.5)
+- Score threshold: `ADAPTIVE_DEPTH_SCORE_THRESHOLD` (default: 0.5)
+- Expand multiplier: `ADAPTIVE_DEPTH_EXPAND_MULTIPLIER` (default: 2)
+- Per-mode limits set independently in `MODE_CONFIG` (`prop_retrieve_limit`, `sect_retrieve_limit`)
+
+---
+
+## 2.5 Proposition-to-Section Mapping Improvement
+
+**Commit**: `752bd4b`
+**Files**: `partb/retrieval/pipeline.py`, `partb/config.py`
+
+### What was done
+
+Strengthened the small-to-big retrieval chain when a proposition's `parent_chunk_id` fails to resolve to a section. Two safeguards were added:
+
+**2.5.1 Multi-parent section_path fallback**: If a proposition's `parent_chunk_id` doesn't exist in the sections collection, the system falls back to matching the proposition's `section_path + book_id` to find the parent section. A new function `fetch_sections_by_section_path()` scrolls sections for the matching book and filters by section path in Python.
+
+**2.5.2 Direct search supplement**: If fewer than `MIN_PARENT_SECTIONS` (default: 3) parent sections are found after both chunk_id and section_path lookups, the pipeline runs an additional direct section search with an expanded limit to fill the gap.
+
+### Key implementation details
+
+- `fetch_sections_by_section_path()` uses `setdefault` to collect unique (book_id, section_path) pairs from orphan propositions
+- Scrolls up to 1000 sections per book, filters by section_path in Python
+- Section found by fallback is extended into `parent_sections` list for dedup in `merge_candidates`
+- Supplement limit = `first_sect_lim + (MIN_PARENT_SECTIONS - total_parent) * 5`
+- Configurable via `MIN_PARENT_SECTIONS` env var (default: 3)
+
+---
+
+## 2.6 Weighted Fusion of Proposition and Section Scores
+
+**Commit**: `752bd4b`
+**Files**: `partb/retrieval/pipeline.py`, `partb/config.py`
+
+### What was done
+
+Proposition search scores are now carried forward to influence section reranking. When `search_propositions()` returns results, the max proposition score per `parent_chunk_id` is recorded and later used as a boost in `rerank_candidates()`.
+
+### How it works
+
+1. **Build prop_score_map**: After `search_propositions()`, a dict maps each `parent_chunk_id` to its max proposition score
+2. **Apply in merge**: `merge_candidates()` stores `prop_child_score` on sections whose chunk_id is in the map
+3. **Boost in rerank**: `rerank_candidates()` adds `prop_child_score * PROP_SCORE_BOOST_WEIGHT * boost_mult` to each candidate's rerank score
+
+### Key implementation details
+
+- Controlled by `PROP_SCORE_BOOST_WEIGHT` config var (env: `RAG_PROP_SCORE_BOOST`, default: 0.10)
+- Boost scales with `boost_mult` (used by query classification for spec_lookup queries)
+- Not applied in the reranker fallback path (when Jina reranker fails, scores are from a different scale)
+- Higher prop_score wins on dedup when a section appears in both parent and direct results
+
+---
+
+## 3.1 Reranker Upgrade — Jina Reranker v3
+
+**Commits**: `3c69fca` (initial), `78e3871` (fix for transformers 5.x compat)
+**Files**: `partb/service/`, `partb/retrieval/pipeline.py`
+
+### What was done
+
+Upgraded from `BAAI/bge-reranker-base` to `jina-reranker-v3` for the listwise reranking approach.
 
 ### Key benefits
 
-- **Listwise scoring**: Scores candidates as a ranked list rather than independently, better reflecting relative relevance
+- **Listwise scoring**: Scores candidates as a ranked list rather than independently
 - **Quality**: Superior cross-attention for technical/scientific content
-- **Multilingual support**: Handles mixed-language content (English + transliterated terms)
+- **131K context**: Can process all candidates in a single forward pass
 
-### Configuration
+### Fix (commit `78e3871`)
 
-Configured via:
-- `partb/service/base_model.py` — Base reranker service class
-- `partb/service/medium_model.py` — Medium mode config
-- `partb/service/deep_model.py` — Deep mode config
+The saved model's `config.json` was created with transformers 4.55.2, but the runtime has transformers 5.6.2. `AutoModel.from_pretrained()` with `trust_remote_code=True` could not resolve the `auto_map` entry, falling back to loading a bare `Qwen3Model` (no `.rerank()` method).
+
+**Fix**: Directly import `JinaForRanking` from the local `modeling.py` via `importlib` instead of relying on `AutoModel`'s class resolution. This bypasses the auto-class resolution entirely.
+
+```python
+import importlib.util
+spec = importlib.util.spec_from_file_location("jina_reranker_modeling", modeling_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+_reranker = mod.JinaForRanking.from_pretrained(reranker_str)
+```
 
 ---
 
@@ -277,7 +391,11 @@ Enhanced the citation format to include the section name, making citations more 
 | # | Feature | Priority | Effort | Status | Tests |
 |---|---|---|---|---|---|
 | 1.2 | Query Classification & Routing | P2 | 1 day | ✅ Done | 12+ |
+| 2.1 | Hybrid Search (Vector + BM25) | P1 | 3-5 days | ✅ Done | — |
 | 2.3 | MMR Diversity Selection | P1 | 1-2 days | ✅ Done | — |
+| 2.4 | Adaptive Retrieval Depth | P2 | 2-3 days | ✅ Done | — |
+| 2.5 | Proposition-to-Section Mapping | P3 | 1 day | ✅ Done | 19 (integration) |
+| 2.6 | Weighted Fusion of Prop & Section Scores | P3 | 1-2 days | ✅ Done | 19 (integration) |
 | 3.1 | Reranker Upgrade (Jina v3) | P1 | 1 day | ✅ Done | — |
 | 4.1a | Greedy Context Budget | P2 | 2-3 days | ✅ Done | 15+ |
 | 4.3a | Markdown Table Preservation | P3 | 1-2 days | ✅ Done | 15+ |
@@ -287,4 +405,4 @@ Enhanced the citation format to include the section name, making citations more 
 
 ---
 
-*Generated: 2026-07-06 | Based on completed code changes to KRUTRIM RAG Part B retrieval pipeline*
+*Generated: 2026-07-07 | Based on completed code changes to KRUTRIM RAG Part B retrieval pipeline*
