@@ -33,14 +33,10 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "ISRO_RAG_SECRET_CHANGE_IN_PROD")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS =8
 
-# LiteLLM OpenAI-compatible proxy (Master)
-LITELLM_BASE_URL = "http://127.0.0.1:4000/v1"
-# LITELLM_BASE_URL = "https://api.mistral.ai/v1"
-LITELLM_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
-
-# If "1", stream from local Ollama /api/generate instead (dev fallback)
-USE_OLLAMA_DIRECT = False
-OLLAMA_URL =  "http://127.0.0.1:11434"
+# Ollama Load Balancer (manages GPU server pool — see olb.py in repo root)
+OLLAMA_LB_URL = os.environ.get("OLLAMA_LB_URL", "http://127.0.0.1:5050")
+OLLAMA_LB_PORT = int(os.environ.get("OLLAMA_LB_PORT", "5050"))
+OLLAMA_STREAM_PORT = int(os.environ.get("OLLAMA_STREAM_PORT", "3720"))
 
 # QDRANT_URL =  "http://localhost:6333"
 QDRANT_URL           = os.environ.get("QDRANT_URL", "http://localhost:6333")
@@ -199,16 +195,15 @@ def apply_parta_service_env() -> None:
 
 MODE_ORDER = ("fast", "balanced", "deep")
 
-# LiteLLM model_name must match deploy/litellm_config.yaml entries
 # Per-mode retrieval limits for propositions and sections.
 # These control how many candidates are initially fetched per retrieval path.
 # Adaptive depth scales these down by ADAPTIVE_DEPTH_INITIAL_FRACTION for
 # the first pass, then back up by ADAPTIVE_DEPTH_EXPAND_MULTIPLIER if needed.
 # Each mode can be tuned independently.
+# ollama_model must match a model name known to the Ollama LB GPU pool (olb.py SERVER_MODELS).
 MODE_CONFIG: dict[str, dict] = {
     "fast": {
-        "litellm_model": "open-mistral-nemo",
-        "ollama_model": "gemma3:1b",  # direct fallback
+        "ollama_model": "mistral:7b-instruct",
         "qdrant_over_retrieve": int(os.environ.get("RAG_FAST_QDRANT_LIMIT", "40")),
         "prop_retrieve_limit": int(os.environ.get("RAG_FAST_PROP_LIMIT", "20")),
         "sect_retrieve_limit": int(os.environ.get("RAG_FAST_SECT_LIMIT", "20")),
@@ -218,8 +213,7 @@ MODE_CONFIG: dict[str, dict] = {
         "llm_timeout_s": float(os.environ.get("RAG_FAST_LLM_TIMEOUT", "600")),
     },
     "balanced": {
-        "litellm_model": "mistral-small-latest",
-        "ollama_model": "mistral:7b-instruct-q4_K_M",
+        "ollama_model": "mistral:7b-instruct",
         "qdrant_over_retrieve": int(os.environ.get("RAG_BAL_QDRANT_LIMIT", "40")),
         "prop_retrieve_limit": int(os.environ.get("RAG_BAL_PROP_LIMIT", "30")),
         "sect_retrieve_limit": int(os.environ.get("RAG_BAL_SECT_LIMIT", "30")),
@@ -229,8 +223,7 @@ MODE_CONFIG: dict[str, dict] = {
         "llm_timeout_s": float(os.environ.get("RAG_BAL_LLM_TIMEOUT", "600")),
     },
     "deep": {
-        "litellm_model": "mistral-large-latest",
-        "ollama_model": "llama3.1:8b-instruct-q4_K_M",
+        "ollama_model": "qwen3:14b",
         "qdrant_over_retrieve": int(os.environ.get("RAG_DEEP_QDRANT_LIMIT", "48")),
         "prop_retrieve_limit": int(os.environ.get("RAG_DEEP_PROP_LIMIT", "40")),
         "sect_retrieve_limit": int(os.environ.get("RAG_DEEP_SECT_LIMIT", "40")),

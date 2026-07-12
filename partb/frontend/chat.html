@@ -2238,7 +2238,7 @@
                         </div>
                         <div id="input-area">
                             <div id="input-box">
-                                <textarea id="question-input" rows="1" placeholder="Ask a question from your selected documents..." onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+                                <textarea id="question-input" rows="1" placeholder="Ask a question from your selected documents..." onkeydown="handleKey(event)" oninput="autoResize(this);scheduleDraftSave()"></textarea>
                                 <div id="input-row">
                                     <div id="mode-btn" onclick="toggleModePopup(event)">
                                         <span id="mode-icon">
@@ -2430,6 +2430,8 @@
             // CONFIG
             // ═════════════════════════════════════════════════════════════════
             const API = "";
+            const COMPOSER_INPUT_MAX_PX = 200;
+            const CHAT_DRAFTS_KEY = "krutrim_chat_drafts";
 
             // ═════════════════════════════════════════════════════════════════
             // STATE
@@ -2445,6 +2447,42 @@
             let bookViewer = { bookId: null, pageNumber: 1, totalPages: 0 };
             let lastMessageCounts = {};
             let syncTimer = null;
+            let draftSaveTimer = null;
+
+            // ── Think-tag streaming state ─────────────────────────────
+            let streamThinkState = { insideThinkBlock: false, thinkCarry: "" };
+
+            // ── Draft persistence ──────────────────────────────────────
+            function readChatDrafts() {
+                try { return JSON.parse(localStorage.getItem(CHAT_DRAFTS_KEY) || "{}"); }
+                catch (_) { return {}; }
+            }
+            function writeChatDrafts(drafts) {
+                try { localStorage.setItem(CHAT_DRAFTS_KEY, JSON.stringify(drafts)); } catch (_) {}
+            }
+            function saveDraftForChat(chatId) {
+                if (!chatId) return;
+                const ta = document.getElementById("question-input");
+                if (!ta) return;
+                const drafts = readChatDrafts();
+                const text = ta.value;
+                if (text) drafts[chatId] = text;
+                else delete drafts[chatId];
+                writeChatDrafts(drafts);
+            }
+            function restoreDraftForChat(chatId) {
+                const ta = document.getElementById("question-input");
+                if (!ta) return;
+                const drafts = readChatDrafts();
+                ta.value = chatId ? (drafts[chatId] || "") : "";
+                autoResize(ta);
+            }
+            function clearDraftForChat(chatId) {
+                if (!chatId) return;
+                const drafts = readChatDrafts();
+                delete drafts[chatId];
+                writeChatDrafts(drafts);
+            }
 
             // ── Theme ──────────────────────────────────────────────────
             function toggleTheme() {
@@ -2763,6 +2801,7 @@
                 }
                 area.scrollTop = area.scrollHeight;
                 lastMessageCounts[chatId] = msgs.length || 0;
+                restoreDraftForChat(chatId);
                 loadChats();
             }
 
@@ -2998,11 +3037,13 @@
                 const q = ta.value.trim();
                 if (!q) return;
                 ta.value = "";
+                clearDraftForChat(activeChatId);
                 autoResize(ta);
                 const mode = overrideMode || currentMode;
                 appendMessage("user", q, [], mode);
                 streaming = true;
                 document.getElementById("send-btn").disabled = true;
+                streamThinkState = { insideThinkBlock: false, thinkCarry: "" };
 
                 const area = document.getElementById("messages-area");
                 const asstRow = document.createElement("div");
@@ -3051,12 +3092,14 @@
                                 textEl.innerHTML = `<div class="status-msg"><div class="status-dot"></div><span>${escHtml(evt.message)}</span></div>`;
                                 textEl.classList.add("streaming");
                             } else if (evt.type === "token") {
+                                const filtered = filterThinkStreamChunk(evt.content, streamThinkState);
+                                if (!filtered) continue;
                                 if (firstToken) {
                                     textEl.innerHTML = "";
                                     textEl.classList.remove("streaming");
                                     firstToken = false;
                                 }
-                                fulltext += evt.content;
+                                fulltext += filtered;
                                 textEl.innerHTML = renderMarkdown(fulltext);
                                 area.scrollTop = area.scrollHeight;
                             } else if (evt.type === "done") {
@@ -3088,6 +3131,7 @@
                                     lastMessageCounts[activeChatId] = (activeChatData?.message_count || 0) + 2;
                                 }
                                 loadChats();
+                                clearDraftForChat(activeChatId);
                             } else if (evt.type === "error") {
                                 textEl.innerHTML = `<span style="color: var(--danger)">${escHtml(evt.message)}</span>`;
                                 textEl.classList.add("streaming");
@@ -3525,6 +3569,65 @@
             // ═════════════════════════════════════════════════════════════════
             // UTILITIES
             // ═════════════════════════════════════════════════════════════════
+            // ── Think/reasoning tag stripping (port from myjs.js) ──────
+            const THINK_TAG_NAMES = ["<think>", "</think>", "<thinking>", "</thinking>", "<redacted_thinking>", "</redacted_thinking>"];
+            const THINK_OPEN_RE = /<(?:think|thinking|redacted_thinking)>/i;
+            const THINK_CLOSE_RE = /<\/(?:think|thinking|redacted_thinking)>/i;
+
+            function getThinkTagCarryLength(text) {
+                const max = Math.min(text.length, 20);
+                for (let len = max; len >= 1; len--) {
+                    const suffix = text.slice(-len).toLowerCase();
+                    if (THINK_TAG_NAMES.some((t) => t === suffix)) continue;
+                    if (THINK_TAG_NAMES.some((t) => t.startsWith(suffix))) return len;
+                }
+                return 0;
+            }
+
+            function filterThinkStreamChunk(chunk, state) {
+                if (!chunk) return "";
+                if (!state) return chunk.replace(/<(?:think|thinking|redacted_thinking)>[\s\S]*?<\/(?:think|thinking|redacted_thinking)>/gi, "").trim();
+                if (typeof state.insideThinkBlock !== "boolean") state.insideThinkBlock = false;
+                if (typeof state.thinkCarry !== "string") state.thinkCarry = "";
+                let text = state.thinkCarry + String(chunk);
+                state.thinkCarry = "";
+                const carryLen = getThinkTagCarryLength(text);
+                if (carryLen > 0) {
+                    state.thinkCarry = text.slice(-carryLen);
+                    text = text.slice(0, -carryLen);
+                    if (!text) return "";
+                }
+                let out = "";
+                let i = 0;
+                while (i < text.length) {
+                    if (state.insideThinkBlock) {
+                        const closeMatch = THINK_CLOSE_RE.exec(text.slice(i));
+                        if (!closeMatch) return out;
+                        i += closeMatch.index + closeMatch[0].length;
+                        state.insideThinkBlock = false;
+                        continue;
+                    }
+                    const openMatch = THINK_OPEN_RE.exec(text.slice(i));
+                    if (!openMatch) {
+                        out += text.slice(i);
+                        break;
+                    }
+                    out += text.slice(i, i + openMatch.index);
+                    i += openMatch.index + openMatch[0].length;
+                    state.insideThinkBlock = true;
+                }
+                return out;
+            }
+
+            function scheduleDraftSave() {
+                if (!activeChatId) return;
+                if (draftSaveTimer) clearTimeout(draftSaveTimer);
+                draftSaveTimer = setTimeout(() => {
+                    draftSaveTimer = null;
+                    saveDraftForChat(activeChatId);
+                }, 300);
+            }
+
             function handleKey(e) {
                 if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
@@ -3532,8 +3635,11 @@
                 }
             }
             function autoResize(el) {
-                el.style.height = "auto";
-                el.style.height = Math.min(el.scrollHeight, 160) + "px";
+                if (!el) return;
+                el.style.height = "0px";
+                const next = Math.min(el.scrollHeight, COMPOSER_INPUT_MAX_PX);
+                el.style.height = next + "px";
+                el.style.overflowY = el.scrollHeight > COMPOSER_INPUT_MAX_PX ? "auto" : "hidden";
             }
             function escHtml(str) {
                 return String(str)

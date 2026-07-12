@@ -101,7 +101,7 @@ library_col.create_index("book_id", unique=True)
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
-app = FastAPI(title="ISRO RAG System", version="2.0.0")
+app = FastAPI(title="ISRO RAG System", version="2.0.1")
 
 app.add_middleware(
     CORSMiddleware,

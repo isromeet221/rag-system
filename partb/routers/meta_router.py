@@ -11,11 +11,9 @@ from partb.auth_jwt import verify_token
 from partb.config import  (
     COLLECTION_PROPS,
     COLLECTION_SECTIONS,
-    LITELLM_API_KEY,
-    LITELLM_BASE_URL, 
-    MONGO_DB, 
-    OLLAMA_URL, 
-    USE_OLLAMA_DIRECT
+    MONGO_DB,
+    OLLAMA_LB_URL,
+    MODE_CONFIG,
 )
 from partb.db import get_mongo
 from partb.logger import time_it, async_time_it
@@ -124,25 +122,13 @@ async def health():
     except Exception as e:
         status["mongodb"] = {"status": "error", "detail": str(e)}
 
-    if USE_OLLAMA_DIRECT:
-        try:
-            r = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=5.0)
-            r.raise_for_status()
-            status["ollama"] = {"status": "ok", "models": [m["name"] for m in r.json().get("models", [])]}
-        except Exception as e:
-            status["ollama"] = {"status": "error", "detail": str(e)}
-        status["litellm"] = {"status": "skipped", "note": "USE_OLLAMA_DIRECT=1"}
-    else:
-        try:
-            h = {"Content-Type": "application/json"}
-            if LITELLM_API_KEY:
-                h["Authorization"] = f"Bearer {LITELLM_API_KEY}"
-            r = httpx.get(f"{LITELLM_BASE_URL}/models", headers=h, timeout=5.0)
-            r.raise_for_status()
-            data = r.json()
-            status["litellm"] = {"status": "ok", "data": data.get("data", data)}
-        except Exception as e:
-            status["litellm"] = {"status": "error", "detail": str(e)}
+    try:
+        r = httpx.get(f"{OLLAMA_LB_URL}/health", timeout=5.0)
+        r.raise_for_status()
+        data = r.json()
+        status["ollama_lb"] = {"status": data.get("status", "ok"), "ollama_reachable": data.get("ollama_reachable", False)}
+    except Exception as e:
+        status["ollama_lb"] = {"status": "error", "detail": str(e)}
 
     return status
 
@@ -150,22 +136,12 @@ async def health():
 @router.get("/models")
 @async_time_it
 async def list_models(_: dict = Depends(verify_token)):
-    if USE_OLLAMA_DIRECT:
-        try:
-            r = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=5.0)
-            r.raise_for_status()
-            return {"models": r.json().get("models", [])}
-        except Exception as e:
-            raise HTTPException(503, f"Ollama unreachable: {e}") from e
-    h = {}
-    if LITELLM_API_KEY:
-        h["Authorization"] = f"Bearer {LITELLM_API_KEY}"
-    try:
-        r = httpx.get(f"{LITELLM_BASE_URL}/models", headers=h, timeout=10.0)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        raise HTTPException(503, f"LiteLLM unreachable: {e}") from e
+    models = set()
+    for mode_cfg in MODE_CONFIG.values():
+        m = mode_cfg.get("ollama_model")
+        if m:
+            models.add(m)
+    return {"models": sorted(models), "note": "Models configured in Ollama LB pool (olb.py); actual availability depends on GPU server state."}
 
 @router.delete("/books/{book_id}")
 @async_time_it
