@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Krutrim AI — Create Account</title>
+  <link rel="stylesheet" href="../fonts/fonts.css">
+  <link rel="stylesheet" href="../css/tokens.css?v=1">
+  <link rel="stylesheet" href="../css/base.css?v=1">
+  <link rel="stylesheet" href="../css/components.css?v=1">
+</head>
+<body>
+  <nav class="primary-nav">
+    <div class="nav-brand">
+      <span class="ascii-logo" style="font-weight: 600; font-size: 16px;">Krutrim AI</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:var(--space-sm)">
+      <button class="btn-icon-ghost" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg></button>
+    </div>
+  </nav>
+
+  <div class="auth-layout">
+    <div class="auth-card">
+      <div class="auth-card-header">
+        <h1 class="display-xl" style="margin-bottom: 4px;">Create account</h1>
+        <p class="body-md" style="color: var(--mute);">Get started with Krutrim AI.</p>
+      </div>
+
+      <form id="signup-form" class="auth-form" autocomplete="off" novalidate>
+        <div class="form-group">
+          <label for="signup-name" class="form-label">Full name</label>
+          <input type="text" id="signup-name" class="input-text" placeholder="Your name" required autocomplete="name">
+        </div>
+
+        <div class="form-group">
+          <label for="signup-email" class="form-label">Email</label>
+          <input type="email" id="signup-email" class="input-text" placeholder="you@example.com" required autocomplete="email">
+        </div>
+
+        <div class="form-group">
+          <label for="signup-password" class="form-label">Password</label>
+          <input type="password" id="signup-password" class="input-text" placeholder="At least 8 characters" required autocomplete="new-password" minlength="8">
+        </div>
+
+        <div class="form-group">
+          <label for="signup-confirm" class="form-label">Confirm password</label>
+          <input type="password" id="signup-confirm" class="input-text" placeholder="Repeat password" required autocomplete="new-password">
+        </div>
+
+        <div class="auth-error" id="signup-error" style="display: none; color: var(--danger); font-size: var(--text-body-sm); margin-top: var(--space-xs);"></div>
+
+        <button type="submit" class="btn-primary" style="width: 100%; height: 44px; margin-top: var(--space-sm);">Create account</button>
+      </form>
+
+      <div class="auth-footer">
+        <span class="caption-md">Already have an account?</span>
+        <a href="login.html" class="body-strong" style="text-decoration: none;">Sign in</a>
+      </div>
+    </div>
+  </div>
+
+  <script src="../js/auth.js?v=1"></script>
+</body>
+</html>

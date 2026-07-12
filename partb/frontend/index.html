@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Krutrim AI — Chat</title>
+  <link rel="stylesheet" href="fonts/fonts.css">
+  <link rel="stylesheet" href="css/tokens.css?v=32">
+  <link rel="stylesheet" href="css/base.css?v=32">
+  <link rel="stylesheet" href="css/components.css?v=32">
+  <link rel="stylesheet" href="css/chat.css?v=32">
+  <!-- PDF.js library -->
+  <script src="js/lib/pdf.min.js"></script>
+  <script src="js/lib/marked.min.js"></script>
+  <link rel="icon" type="image/svg+xml" href="isro-logo.svg">
+</head>
+<body>
+  <nav class="primary-nav">
+    <div class="nav-brand" style="display: flex; align-items: center; gap: 12px;">
+      <button class="btn-icon-ghost" id="sidebar-toggle" aria-label="Toggle Sidebar" title="Toggle Sidebar" style="margin-right: 8px;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+      </button>
+      <img src="isro-logo.svg" alt="ISRO Logo" style="height: 36px; width: auto;">
+      <div style="display: flex; flex-direction: column; justify-content: center;">
+        <span class="ascii-logo" style="font-weight: 600; font-size: 18px; line-height: 1.2;">Krutrim AI</span>
+        <span style="font-size: 12px; color: var(--mute); line-height: 1.2;">Knowledge Retrieval Transformer-Based Model</span>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:var(--space-sm)">
+      <span class="chat-status" id="chat-status" style="margin-right:var(--space-md)">Idle</span>
+      <button class="btn-icon-ghost" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg></button>
+    </div>
+  </nav>
+
+  <div class="chat-layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-search">
+        <div style="position: relative; width: 100%; cursor: pointer;" id="sidebar-search-trigger">
+          <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position: absolute; left: 8px; top: 50%; transform: translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <div class="search-input" style="display: flex; align-items: center; padding-left: 28px; padding-right: 8px; color: var(--mute);">
+            Search chats... <kbd style="margin-left: auto; font-family: inherit; font-size: 10px; background: var(--surface); border: 1px solid var(--hairline); border-radius: 4px; padding: 2px 4px; color: var(--mute);">Ctrl K</kbd>
+          </div>
+        </div>
+      </div>
+      <div class="sidebar-header" style="display: flex; justify-content: space-between; align-items: center;">
+        <span class="badge-section">Chats</span>
+        <button class="btn-icon-ghost" id="new-session-btn" aria-label="New Chat" title="New Chat">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        </button>
+      </div>
+      <div class="sidebar-list" id="session-list"></div>
+      <div class="sidebar-footer hairline-top">
+        <div class="user-profile-card">
+          <div class="user-avatar"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg></div>
+          <div class="user-info">
+            <div class="user-name" id="sidebar-user-name">User</div>
+            <div class="user-role" id="sidebar-user-role"></div>
+          </div>
+          <button class="btn-icon-ghost" id="user-settings-btn" aria-label="Settings" title="Settings"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main-chat">
+      <div class="chat-header">
+        <div style="display:flex;align-items:center;gap:var(--space-sm)">
+          <span class="body-strong" id="chat-title">Select Chat</span>
+        </div>
+      </div>
+
+      <div class="chat-messages" id="chat-messages">
+        <div class="message-thread" id="message-thread">
+          <div class="chat-empty" id="empty-state">
+            <div class="chat-empty-icon-wrap">
+              <div class="chat-empty-icon-ring"></div>
+              <div class="chat-empty-icon-orb">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+              </div>
+            </div>
+            <div class="chat-empty-title">Select a chat to begin</div>
+            <div class="chat-empty-hint">Choose a conversation from the sidebar or start a new one.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="chat-input-area" style="position: relative;">
+        <button id="scroll-to-bottom-btn" class="scroll-bottom-btn" aria-label="Scroll to bottom" title="Scroll to bottom">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>
+          <span>Scroll to bottom</span>
+        </button>
+        <form class="chat-input-box" id="chat-form" autocomplete="off">
+          <textarea
+            class="input-textarea"
+            id="chat-input"
+            placeholder="Ask anything, @ to mention, / for actions"
+            autofocus
+            rows="1"
+          ></textarea>
+          
+          <div class="chat-input-toolbar">
+            <div class="toolbar-left">
+              <div class="custom-dropdown" id="model-dropdown">
+                <button type="button" class="btn-text-ghost dropdown-toggle" id="model-dropdown-toggle">
+                  <svg class="dropdown-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                  <span class="dropdown-label" id="model-dropdown-label">Fast</span>
+                  <svg class="chevron-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                </button>
+                <div class="dropdown-menu" id="model-dropdown-menu">
+                  <button type="button" class="dropdown-item selected" data-value="fast">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                    <span>Fast</span>
+                  </button>
+                  <button type="button" class="dropdown-item" data-value="balance">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
+                    <span>Balance</span>
+                  </button>
+                  <button type="button" class="dropdown-item" data-value="deep">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                    <span>Deep</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="toolbar-right">
+
+              <button type="submit" class="btn-circle-solid" aria-label="Send">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </main>
+
+    <!-- PDF Viewer — Right Sidebar Drawer -->
+    <div class="pdf-drawer" id="pdf-viewer-modal" role="complementary" aria-label="PDF Reference Viewer">
+      <!-- Drag handle -->
+      <div class="pdf-drawer-handle"></div>
+
+      <!-- Header -->
+      <div class="pdf-viewer-header">
+        <div class="pdf-viewer-header-left">
+          <div class="pdf-viewer-icon">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          </div>
+          <div class="pdf-viewer-titles">
+            <div class="pdf-viewer-title" id="pdf-viewer-title">Document</div>
+            <div class="pdf-viewer-subtitle" id="pdf-viewer-subtitle">Loading reference…</div>
+          </div>
+        </div>
+        <div class="pdf-viewer-header-right">
+          <div class="pdf-page-controls">
+            <button class="pdf-page-btn" id="pdf-prev-btn" title="Previous page" disabled>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            </button>
+            <span class="pdf-page-info">p.<span id="pdf-current-page">1</span>/<span id="pdf-total-pages">1</span></span>
+            <button class="pdf-page-btn" id="pdf-next-btn" title="Next page" disabled>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+            </button>
+          </div>
+          <button class="btn-icon-ghost pdf-close-btn" id="pdf-viewer-close" title="Close viewer">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- PDF canvas -->
+      <div class="pdf-canvas-area" style="overflow: auto; background-color: var(--surface-bg);">
+        <div id="pdf-page-canvas" style="text-align: center; margin: auto; display: flex; flex-direction: column; align-items: center;">
+          <div id="pdf-canvas-wrapper" style="position: relative; display: inline-block; max-width: 100%;">
+            <canvas id="pdf-render-canvas" style="max-width: 100%; display: block; box-shadow: 0 2px 6px rgba(0,0,0,0.3), 0 10px 32px rgba(0,0,0,0.25); border-radius: 2px;"></canvas>
+          </div>
+          <div class="pdf-page-number-badge" id="pdf-page-badge" style="position: static; margin-top: 12px; transform: none;">p. 1</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Overlay for Creating New Chat -->
+  <div class="modal-overlay" id="new-chat-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title">Create New Chat</h3>
+        <button class="btn-icon-ghost modal-close-btn" id="modal-close" aria-label="Close dialog">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <form id="new-chat-form" class="modal-body">
+        <div class="form-group">
+          <label for="modal-chat-title" class="form-label">Chat Title</label>
+          <input type="text" id="modal-chat-title" class="input-text" placeholder="Enter chat title..." required autocomplete="off">
+        </div>
+        
+        <div class="form-group">
+          <label class="form-label">Book Selection</label>
+          <div class="custom-dropdown form-dropdown" id="modal-book-dropdown" style="width: 100%;">
+            <button type="button" class="input-text dropdown-toggle" id="modal-book-toggle" style="display: flex; align-items: center; justify-content: space-between; text-align: left; width: 100%;">
+              <span id="modal-book-label" style="color: var(--mute);">Choose a book...</span>
+              <svg class="chevron-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--mute); transition: transform 0.2s;"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+            <div class="dropdown-menu" id="modal-book-menu">
+              <button type="button" class="dropdown-item book-dropdown-item" data-value="clean-code">
+                <span class="book-item-title">Clean Code</span>
+                <span class="book-item-meta">Robert C. Martin &nbsp;·&nbsp; 464 pages &nbsp;·&nbsp; 1,856 chunks</span>
+              </button>
+              <button type="button" class="dropdown-item book-dropdown-item" data-value="pragmatic-programmer">
+                <span class="book-item-title">The Pragmatic Programmer</span>
+                <span class="book-item-meta">Andy Hunt &amp; Dave Thomas &nbsp;·&nbsp; 352 pages &nbsp;·&nbsp; 1,408 chunks</span>
+              </button>
+              <button type="button" class="dropdown-item book-dropdown-item" data-value="sicp">
+                <span class="book-item-title">Structure &amp; Interpretation of Computer Programs</span>
+                <span class="book-item-meta">Abelson &amp; Sussman &nbsp;·&nbsp; 657 pages &nbsp;·&nbsp; 2,628 chunks</span>
+              </button>
+              <button type="button" class="dropdown-item book-dropdown-item" data-value="clrs">
+                <span class="book-item-title">Introduction to Algorithms (CLRS)</span>
+                <span class="book-item-meta">Cormen et al. &nbsp;·&nbsp; 1,312 pages &nbsp;·&nbsp; 5,248 chunks</span>
+              </button>
+              <button type="button" class="dropdown-item book-dropdown-item" data-value="ydkjs">
+                <span class="book-item-title">You Don't Know JS</span>
+                <span class="book-item-meta">Kyle Simpson &nbsp;·&nbsp; 250 pages &nbsp;·&nbsp; 1,000 chunks</span>
+              </button>
+            </div>
+            <input type="hidden" id="modal-book-select" required>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Model Type</label>
+          <div class="model-select-group">
+            <label class="model-select-btn">
+              <input type="radio" name="modal-model" value="fast" checked>
+              <div class="model-btn-content">
+                <svg class="model-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                <span>Fast</span>
+              </div>
+            </label>
+            <label class="model-select-btn">
+              <input type="radio" name="modal-model" value="balance">
+              <div class="model-btn-content">
+                <svg class="model-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
+                <span>Balance</span>
+              </div>
+            </label>
+            <label class="model-select-btn">
+              <input type="radio" name="modal-model" value="deep">
+              <div class="model-btn-content">
+                <svg class="model-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                <span>Deep</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn-secondary" id="modal-cancel">Cancel</button>
+          <button type="submit" class="btn-primary">Create Chat</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Overlay for Deleting Context -->
+  <div class="modal-overlay" id="delete-context-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title">Delete Book Context</h3>
+        <button class="btn-icon-ghost modal-close-btn" id="delete-context-close" aria-label="Close dialog">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <form id="delete-context-form" class="modal-body">
+        <div class="form-group">
+          <p style="color: var(--mute); font-size: var(--text-body-md); margin-bottom: var(--space-md);">Select a book to delete its context from the database. This action cannot be undone.</p>
+          <label class="form-label">Book Selection</label>
+          <div class="custom-dropdown form-dropdown" id="delete-book-dropdown" style="width: 100%;">
+            <button type="button" class="input-text dropdown-toggle" id="delete-book-toggle" style="display: flex; align-items: center; justify-content: space-between; text-align: left; width: 100%;">
+              <span id="delete-book-label" style="color: var(--mute);">Choose a book...</span>
+              <svg class="chevron-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--mute); transition: transform 0.2s;"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+            <div class="dropdown-menu" id="delete-book-menu" style="top: 100%; bottom: auto; width: 100%; max-height: 200px; overflow-y: auto; margin-top: 4px;">
+              <button type="button" class="dropdown-item" data-value="clean-code" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                <span style="font-size: 14px;">Clean Code — Robert C. Martin</span>
+                <span style="font-size: 12px; color: var(--mute); margin-left: 12px; white-space: nowrap;">464 pages, 1,856 chunks</span>
+              </button>
+              <button type="button" class="dropdown-item" data-value="pragmatic-programmer" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                <span style="font-size: 14px;">The Pragmatic Programmer — Andy Hunt & Dave Thomas</span>
+                <span style="font-size: 12px; color: var(--mute); margin-left: 12px; white-space: nowrap;">352 pages, 1,408 chunks</span>
+              </button>
+              <button type="button" class="dropdown-item" data-value="sicp" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                <span style="font-size: 14px;">Structure & Interpretation of Computer Programs</span>
+                <span style="font-size: 12px; color: var(--mute); margin-left: 12px; white-space: nowrap;">657 pages, 2,628 chunks</span>
+              </button>
+              <button type="button" class="dropdown-item" data-value="clrs" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                <span style="font-size: 14px;">Introduction to Algorithms (CLRS)</span>
+                <span style="font-size: 12px; color: var(--mute); margin-left: 12px; white-space: nowrap;">1,312 pages, 5,248 chunks</span>
+              </button>
+              <button type="button" class="dropdown-item" data-value="ydkjs" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                <span style="font-size: 14px;">You Don't Know JS — Kyle Simpson</span>
+                <span style="font-size: 12px; color: var(--mute); margin-left: 12px; white-space: nowrap;">250 pages, 1,000 chunks</span>
+              </button>
+            </div>
+            <input type="hidden" id="delete-book-select" required>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-secondary" id="delete-context-cancel">Cancel</button>
+          <button type="submit" class="btn-danger">Delete</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Overlay for Settings -->
+  <div class="modal-overlay" id="settings-modal">
+    <div class="modal-card" style="max-width: 500px;">
+      <div class="modal-header">
+        <h3 class="modal-title">Settings</h3>
+        <button class="btn-icon-ghost modal-close-btn" id="settings-modal-close" aria-label="Close dialog">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div style="font-size: var(--text-caption-md); font-weight: var(--weight-medium); color: var(--mute); margin-bottom: var(--space-xs);">Email</div>
+        <div style="display: flex; align-items: center; gap: var(--space-sm); padding: var(--space-sm) 0; margin-bottom: var(--space-sm);">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--mute); flex-shrink: 0;"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+          <input type="email" class="input-text" value="guest@krutrim.ai" readonly style="width: 100%; border: none; background: transparent; padding: 0; color: var(--ink); font-size: var(--text-body-md);">
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: var(--space-sm) 0;">
+          <span style="font-size: var(--text-body-md);">Dark Mode</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="settings-dark-mode">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <hr style="border: none; border-top: 1px solid var(--hairline); margin: var(--space-md) 0;">
+
+        <button type="button" class="dropdown-item" id="open-delete-context-btn" style="padding: var(--space-sm) 0; width: 100%;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #ff4d4f"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+          <span style="color: #ff4d4f">Delete Context</span>
+        </button>
+
+        <button type="button" class="dropdown-item" onclick="window.location.href='/pages/logout.html'" style="padding: var(--space-sm) 0; width: 100%;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+          <span>Log out</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Overlay for Search in Chat -->
+  <div class="modal-overlay" id="search-modal">
+    <div class="modal-card" style="max-width: 650px; display: flex; flex-direction: column; max-height: 80vh; padding: 0;">
+      <div class="modal-header" style="border-bottom: 1px solid var(--hairline); padding: var(--space-md) var(--space-lg); display: flex; align-items: center; justify-content: space-between;">
+        <input type="text" id="chat-search-input" class="input-text" placeholder="Search chats..." autocomplete="off" style="width: 100%; border: none; background: transparent; padding: 0; font-size: 16px; outline: none; box-shadow: none;">
+        <button class="btn-icon-ghost modal-close-btn" id="search-modal-close" aria-label="Close dialog" style="margin-left: 16px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <div class="modal-body" id="search-results-container" style="flex: 1; overflow-y: auto; padding: var(--space-md) 0;">
+        <div id="search-results-empty" style="text-align: center; color: var(--mute); padding: var(--space-xl) 0; font-size: var(--text-body-md);">
+          Type to search messages in the current chat.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js?v=32"></script>
+</body>
+</html>

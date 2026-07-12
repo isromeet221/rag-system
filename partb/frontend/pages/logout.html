@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Krutrim AI — Log Out</title>
+  <link rel="stylesheet" href="../fonts/fonts.css">
+  <link rel="stylesheet" href="../css/tokens.css?v=4">
+  <link rel="stylesheet" href="../css/base.css?v=4">
+  <link rel="stylesheet" href="../css/components.css?v=4">
+  <style>
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background-color: var(--canvas);
+      color: var(--ink);
+    }
+    .logout-card {
+      background-color: var(--surface-card);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-sm);
+      padding: var(--space-xl);
+      text-align: center;
+      max-width: 400px;
+      width: 100%;
+    }
+    .logout-card h2 {
+      margin-top: 0;
+      margin-bottom: var(--space-md);
+    }
+    .logout-card p {
+      color: var(--mute);
+      margin-bottom: var(--space-lg);
+    }
+  </style>
+</head>
+<body>
+  <div class="logout-card">
+    <h2>Logged Out</h2>
+    <p>You have been successfully logged out of your account.</p>
+    <button class="btn-primary" onclick="window.location.href='login.html'" style="width: 100%;">Return to Sign In</button>
+  </div>
+  <script>localStorage.removeItem('krutrim-auth');</script>
+</body>
+</html>

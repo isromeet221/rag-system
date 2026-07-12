@@ -1,0 +1,122 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-body-md);
+  font-weight: var(--weight-regular);
+  line-height: var(--leading-body);
+  color: var(--body);
+  background-color: var(--canvas);
+  min-height: 100vh;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+textarea {
+  font-family: inherit;
+}
+
+a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  color: var(--ink-deep);
+}
+
+ul {
+  list-style: none;
+}
+
+/* ===== TYPOGRAPHY UTILITIES ===== */
+.display-xl {
+  font-size: var(--text-display-xl);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-display);
+  letter-spacing: 0;
+  color: var(--ink);
+}
+
+.heading-md {
+  font-size: var(--text-heading-md);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-body);
+  letter-spacing: 0;
+  color: var(--ink);
+}
+
+.body-md {
+  font-size: var(--text-body-md);
+  font-weight: var(--weight-regular);
+  line-height: var(--leading-body);
+  letter-spacing: 0;
+  color: var(--body);
+}
+
+.body-strong {
+  font-size: var(--text-body-md);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-body);
+  letter-spacing: 0;
+  color: var(--ink);
+}
+
+.caption-md {
+  font-size: var(--text-caption-md);
+  font-weight: var(--weight-regular);
+  line-height: var(--leading-caption);
+  letter-spacing: 0;
+  color: var(--mute);
+}
+
+/* ===== HAIRLINE UTILITIES ===== */
+.hairline-bottom {
+  border-bottom: 1px solid var(--hairline);
+}
+
+.hairline-top {
+  border-top: 1px solid var(--hairline);
+}
+
+.hairline-right {
+  border-right: 1px solid var(--hairline);
+}
+
+.hairline-left {
+  border-left: 1px solid var(--hairline);
+}
+
+/* ===== SCROLLBAR ===== */
+* {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+}
+
+::-webkit-scrollbar {
+  display: none; /* Chrome, Safari and Opera */
+  width: 0;
+  height: 0;
+}
