@@ -204,6 +204,16 @@ def get_reranker():
         _reranker.eval()
     return _reranker
 
+_colbert_model = None
+
+@time_it
+def get_colbert():
+    global _colbert_model
+    if _colbert_model is None:
+        from fastembed import LateInteractionTextEmbedding
+        _colbert_model = LateInteractionTextEmbedding("colbert-ir/colbertv2.0")
+    return _colbert_model
+
 @time_it
 def get_qdrant():
     global _qdrant_cl
@@ -407,13 +417,30 @@ def search_propositions(query: str, book_ids: list[str], limit: int) -> list[dic
             must=[qm.FieldCondition(key="book_id", match=qm.MatchAny(any=book_ids))]
         )
     try:
-        response = client.query_points(
-            collection_name=COLLECTION_PROPS,
-            query=query_vec,
-            query_filter=filters,
-            limit=limit,
-            with_payload=True,
-        )
+        from partb.config import USE_COLBERT
+        if USE_COLBERT:
+            colbert_model = get_colbert()
+            query_colbert = list(colbert_model.query_embed(query))[0].tolist()
+            response = client.query_points(
+                collection_name=COLLECTION_PROPS,
+                prefetch=qm.Prefetch(
+                    query=query_vec,
+                    limit=limit * 3,
+                ),
+                query=query_colbert,
+                using="colbert",
+                query_filter=filters,
+                limit=limit,
+                with_payload=True,
+            )
+        else:
+            response = client.query_points(
+                collection_name=COLLECTION_PROPS,
+                query=query_vec,
+                query_filter=filters,
+                limit=limit,
+                with_payload=True,
+            )
         hits = response.points
     except Exception as exc:
         logging.warning("Propositions search failed: %s", exc)
@@ -731,14 +758,32 @@ def search_sections_direct(
         else None
     )
     try:
-        response = client.query_points(
-            collection_name=COLLECTION_SECTIONS,
-            query=query_vec,
-            query_filter=filters,
-            limit=limit,
-            with_payload=True,
-            with_vectors=ENABLE_MMR,
-        )
+        from partb.config import USE_COLBERT
+        if USE_COLBERT:
+            colbert_model = get_colbert()
+            query_colbert = list(colbert_model.query_embed(query))[0].tolist()
+            response = client.query_points(
+                collection_name=COLLECTION_SECTIONS,
+                prefetch=qm.Prefetch(
+                    query=query_vec,
+                    limit=limit * 3,
+                ),
+                query=query_colbert,
+                using="colbert",
+                query_filter=filters,
+                limit=limit,
+                with_payload=True,
+                with_vectors=ENABLE_MMR,
+            )
+        else:
+            response = client.query_points(
+                collection_name=COLLECTION_SECTIONS,
+                query=query_vec,
+                query_filter=filters,
+                limit=limit,
+                with_payload=True,
+                with_vectors=ENABLE_MMR,
+            )
         hits = response.points
     except Exception as exc:
         logging.warning("Sections search failed: %s", exc)
@@ -833,6 +878,19 @@ def rerank_candidates(query: str, candidates: list[dict], top_n: int, boost_mult
     candidates = sorted(candidates, key=lambda x: x.get("qdrant_score") or 0.0, reverse=True)
     if len(candidates) > top_n:
         candidates = candidates[:top_n]
+        
+    from partb.config import USE_COLBERT
+    if USE_COLBERT:
+        # Skip Jina entirely if ColBERT is enabled, since Qdrant native search already reranked
+        for c in candidates:
+            base = c.get("qdrant_score")
+            c["rerank_score"] = float(base) if isinstance(base, (int, float)) else 0.0
+            if c.get("from_qdrant") and c.get("from_neo4j"):
+                c["rerank_score"] += BOOST_BOTH * boost_mult
+            prop_score = c.get("prop_child_score", 0.0)
+            if prop_score > 0:
+                c["rerank_score"] += prop_score * PROP_SCORE_BOOST_WEIGHT * boost_mult
+        return candidates
 
     try:
         reranker = get_reranker()

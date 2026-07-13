@@ -144,12 +144,25 @@ def _ensure_collection(client, name: str):
     from qdrant_client import models as qm
 
     if not client.collection_exists(name):
+        import os
+        if os.environ.get("RAG_USE_COLBERT", "0") == "1":
+            vectors_config = {
+                "": qm.VectorParams(size=EMBEDDING_DIM, distance=qm.Distance.COSINE),
+                "colbert": qm.VectorParams(
+                    size=128,
+                    distance=qm.Distance.COSINE,
+                    multivector_config=qm.MultiVectorConfig(
+                        comparator=qm.MultiVectorComparator.MAX_SIM
+                    ),
+                    hnsw_config=qm.HnswConfigDiff(m=0)
+                )
+            }
+        else:
+            vectors_config = qm.VectorParams(size=EMBEDDING_DIM, distance=qm.Distance.COSINE)
+            
         client.create_collection(
             collection_name=name,
-            vectors_config=qm.VectorParams(
-                size=EMBEDDING_DIM,
-                distance=qm.Distance.COSINE,
-            ),
+            vectors_config=vectors_config,
         )
         print(f"[QDRANT] Created collection: '{name}'")
     else:
@@ -217,18 +230,39 @@ def _embed_batches_with_workers(model, batches: List[List[str]]) -> List[List[Li
     return [_embed_batch(model, batch) for batch in batches]
 
 
+_colbert_model = None
+def _get_colbert_model():
+    global _colbert_model
+    if _colbert_model is None:
+        from fastembed import LateInteractionTextEmbedding
+        _colbert_model = LateInteractionTextEmbedding("colbert-ir/colbertv2.0")
+    return _colbert_model
+
 @time_it
 def _upsert_prepared_batches(client, collection_name: str, prepared_batches: List[tuple], model) -> int:
     """Embeds prepared text/meta batches using workers, then upserts to Qdrant."""
     from qdrant_client import models as qm
+    import os
     if not prepared_batches:
         return 0
     text_batches = [b[0] for b in prepared_batches]
     meta_batches = [b[1] for b in prepared_batches]
     vector_batches = _embed_batches_with_workers(model, text_batches)
+    
+    use_colbert = os.environ.get("RAG_USE_COLBERT", "0") == "1"
+    if use_colbert:
+        colbert_model = _get_colbert_model()
+        
     total = 0
-    for vectors, metas in zip(vector_batches, meta_batches):
-        points = [qm.PointStruct(id=m["point_id"], vector=v, payload=m["payload"]) for v, m in zip(vectors, metas)]
+    for texts, vectors, metas in zip(text_batches, vector_batches, meta_batches):
+        if use_colbert:
+            colbert_vectors = list(colbert_model.embed(texts))
+            points = []
+            for v, cv, m in zip(vectors, colbert_vectors, metas):
+                point_vectors = {"": v, "colbert": cv.tolist()}
+                points.append(qm.PointStruct(id=m["point_id"], vector=point_vectors, payload=m["payload"]))
+        else:
+            points = [qm.PointStruct(id=m["point_id"], vector=v, payload=m["payload"]) for v, m in zip(vectors, metas)]
         client.upsert(collection_name=collection_name, points=points)
         total += len(points)
     logger.info("[QDRANT] Upserted vectors | collection=%s | points=%s", collection_name, total)

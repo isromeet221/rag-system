@@ -108,8 +108,11 @@ RERANK_FULL_CHUNK_WORDS = int(os.environ.get("RAG_RERANK_FULL_CHUNK_WORDS", "800
 RERANK_MIN_SCORE = float(os.environ.get("RAG_RERANK_MIN_SCORE", "0.0"))
 
 # Score-distribution logging sample rate — log min/median/max of rerank scores
-# once per N queries so you can calibrate RERANK_MIN_SCORE / BOOST_BOTH.
+# be calibrated against real data rather than guessed.
 RERANK_LOG_DISTRIBUTION_EVERY = int(os.environ.get("RAG_RERANK_LOG_DIST_EVERY", "1"))
+
+# Enable ColBERT multi-vector late interaction (replaces Jina)
+USE_COLBERT = os.environ.get("RAG_USE_COLBERT", "0") == "1"
 
 
 # ── Proposition-to-Section mapping (2.5 & 2.6) ────────────────────────
