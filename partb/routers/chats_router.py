@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+import asyncio
 from datetime import datetime,timezone
 from typing import Any
 
@@ -214,6 +215,15 @@ async def ask(chat_id: str, body: AskBody, user: dict = Depends(verify_token)):
                         {"chat_id": chat_id},
                         {"$inc": {"message_count": 1}, "$set": {"updated_at": datetime.utcnow()}},
                     )
+        except asyncio.CancelledError:
+            logger.info("[CHAT] Request cancelled by client (Stopped) | chat_id=%s | tokens=%s", chat_id, token_events)
+            if full_answer:
+                save_message(chat_id, "assistant", full_answer + " (Stopped)", mode, sources_out)
+                ccol.update_one(
+                    {"chat_id": chat_id},
+                    {"$inc": {"message_count": 1}, "$set": {"updated_at": datetime.utcnow()}},
+                )
+            raise
         except Exception as e:
             logger.exception("[CHAT] Ask stream failed | chat_id=%s", chat_id)
             yield _sse({"type": "error", "message": str(e)})

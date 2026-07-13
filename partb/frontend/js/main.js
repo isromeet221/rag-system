@@ -10,6 +10,18 @@ import {
 } from './render.js?v=32';
 import { initPdfViewer } from './pdf.js?v=32';
 
+let currentAbortController = null;
+const stopGenerateBtn = document.getElementById('stop-generate-btn');
+const sendBtn = document.getElementById('send-message-btn');
+
+if (stopGenerateBtn) {
+  stopGenerateBtn.addEventListener('click', () => {
+    if (currentAbortController) {
+      currentAbortController.abort();
+    }
+  });
+}
+
 function escapeHtml(str) {
   if (!str) return '';
   return String(str)
@@ -49,11 +61,19 @@ async function sendMessage(text) {
   el.chatInput.style.height = 'auto';
   el.chatInput.disabled = true;
   showTypingIndicator();
+  
+  if (sendBtn && stopGenerateBtn) {
+    sendBtn.style.display = 'none';
+    stopGenerateBtn.style.display = 'inline-flex';
+  }
+  
+  currentAbortController = new AbortController();
 
   try {
     const res = await apiFetch(`/chats/${state.activeSessionId}/ask`, {
       method: "POST",
-      body: JSON.stringify({ question: trimmed, mode: s.model || "balanced" })
+      body: JSON.stringify({ question: trimmed, mode: s.model || "balanced" }),
+      signal: currentAbortController.signal
     });
     
     if (!res || !res.ok) throw new Error("Failed to send message");
@@ -102,11 +122,21 @@ async function sendMessage(text) {
   } catch(e) {
     console.error(e);
     removeTypingIndicator();
-    s.messages.push({ sender: 'bot', text: "Error: Could not get response." });
+    if (e.name === 'AbortError') {
+      s.messages[s.messages.length - 1].text += " (Stopped)";
+      delete s.messages[s.messages.length - 1].isStreaming;
+    } else {
+      s.messages.push({ sender: 'bot', text: "Error: Could not get response." });
+    }
     renderMessages();
   } finally {
+    if (sendBtn && stopGenerateBtn) {
+      stopGenerateBtn.style.display = 'none';
+      sendBtn.style.display = 'inline-flex';
+    }
     el.chatInput.disabled = false;
     el.chatInput.focus();
+    currentAbortController = null;
   }
 }
 
