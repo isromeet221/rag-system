@@ -47,19 +47,45 @@ async def stream_llm(
     prompt = _prompt_from_messages(messages)
     
     # Try Ollama LB first
+    lb_failed = False
+    tokens_yielded = 0
     try:
         async for ev in _stream_via_ollama_lb(prompt, model, mode, timeout):
+            if ev.get("type") == "error":
+                logger.warning("[OLLAMA-LB] yielded error: %s", ev.get("message"))
+                if tokens_yielded == 0:
+                    lb_failed = True
+                    break
+                else:
+                    yield ev
+                    return
+            if ev.get("type") == "token":
+                tokens_yielded += 1
             yield ev
-        return
+        if not lb_failed:
+            return
     except Exception as e:
         logger.warning("[OLLAMA-LB] Failed, falling back to LiteLLM: %s", e)
         
     # Fallback to LiteLLM if enabled
+    litellm_failed = False
+    tokens_yielded = 0
     if USE_LITELLM_FALLBACK:
         try:
             async for ev in _stream_litellm(messages, mode, cfg, timeout):
+                if ev.get("type") == "error":
+                    logger.warning("[LITELLM] yielded error: %s", ev.get("message"))
+                    if tokens_yielded == 0:
+                        litellm_failed = True
+                        break
+                    else:
+                        yield ev
+                        return
+                if ev.get("type") == "token":
+                    tokens_yielded += 1
                 yield ev
-            return
+            if not litellm_failed:
+                return
         except Exception as e:
             logger.warning("[LITELLM] Failed, falling back to direct Ollama: %s", e)
     
@@ -189,7 +215,7 @@ async def _stream_litellm(
         headers["Authorization"] = f"Bearer {LITELLM_API_KEY}"
 
     body = {
-        "model": cfg["litellm_model"],
+        "model": cfg.get("litellm_model") or cfg.get("ollama_model", "mistral:7b-instruct"),
         "messages": messages,
         "stream": True,
         "temperature": 0.2,
