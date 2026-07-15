@@ -1,18 +1,17 @@
 """
-text_workers.py
+text_workers.py — PDF extraction worker (Docling).
 Fixed version:
 - Local-disk model cache per machine (kills NAS/SMB file-lock contention
   that was producing WinError 32 and inconsistent transformers errors)
 - Async delete queue for temp PDFs (unlink retries no longer block the job loop)
 - Loud accelerate dependency check at startup
 - Result cache + replay preserved, moved off system temp to LOCALAPPDATA
-- Win-safe file ops preserved
+- Win-safe file ops provided by base_worker
 """
 
 import sys
 import os
 import gc
-import json
 import queue
 import re
 import shutil
@@ -23,27 +22,24 @@ import random
 import threading
 from pathlib import Path
 
-from workers.logger import logger, worker_log_process, setup_worker_logger
 import requests
-import socket
-from urllib3.connection import HTTPConnection
-
-# ── TCP keepalive — prevents idle connections from being silently dropped ──────
-# by load balancers / proxies / NAT gateways. Sends first probe after 60 s of
-# idle, then every 10 s, giving up after 5 failed probes (50 s window).
-HTTPConnection.default_socket_options = HTTPConnection.default_socket_options + [
-    (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
-    (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60),
-    (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10),
-    (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5),
-]
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from workers.logger import log_process, setup_worker_logger
+from workers.base_worker import (
+    create_session,
+    ResultCache,
+    submit_with_retry,
+    safe_unlink,
+    safe_write_text,
+    safe_read_text,
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 WORKER_ID = f"text-{uuid.uuid4().hex[:6]}"
 
-setup_worker_logger("text", WORKER_ID)
+logger = setup_worker_logger("text", WORKER_ID)
 
 # accelerate is a hard dependency for Docling's transformer-backed layout
 # model when it loads with device_map. Missing it doesn't crash on import,
@@ -58,55 +54,7 @@ ERROR_SLEEP = 5
 
 
 # ─────────────────────────────────────────────────────────────
-# Windows-safe file ops — retry with backoff on transient locks.
-# ─────────────────────────────────────────────────────────────
-def _win_safe_unlink(path: Path, attempts: int = 8, base_delay: float = 0.15):
-    for i in range(attempts):
-        try:
-            path.unlink(missing_ok=True)
-            return
-        except PermissionError as e:
-            if i == attempts - 1:
-                logger.warning(f"[{WORKER_ID}] Giving up deleting {path} after {attempts} attempts: {e}")
-                return
-            time.sleep(base_delay * (2 ** i))
-
-
-def _win_safe_write_bytes(path: Path, data: bytes, attempts: int = 5, base_delay: float = 0.15):
-    for i in range(attempts):
-        try:
-            with open(path, "wb") as f:
-                f.write(data)
-            return
-        except PermissionError:
-            if i == attempts - 1:
-                raise
-            time.sleep(base_delay * (2 ** i))
-
-
-def _win_safe_write_text(path: Path, text: str, attempts: int = 5, base_delay: float = 0.15):
-    for i in range(attempts):
-        try:
-            path.write_text(text, encoding="utf-8")
-            return
-        except PermissionError:
-            if i == attempts - 1:
-                raise
-            time.sleep(base_delay * (2 ** i))
-
-
-def _win_safe_read_text(path: Path, attempts: int = 5, base_delay: float = 0.15) -> str:
-    for i in range(attempts):
-        try:
-            return path.read_text(encoding="utf-8")
-        except PermissionError:
-            if i == attempts - 1:
-                raise
-            time.sleep(base_delay * (2 ** i))
-
-
-# ─────────────────────────────────────────────────────────────
-# Async delete queue. _win_safe_unlink retries for up to ~38s on a
+# Async delete queue. safe_unlink retries for up to ~38s on a
 # stubborn lock (8 attempts, exponential backoff). Doing that
 # synchronously inside process_chunk blocks the job loop — one
 # locked temp file stalls that worker for the entire retry window.
@@ -118,7 +66,7 @@ _delete_queue: "queue.Queue[Path]" = queue.Queue()
 def _reaper_loop():
     while True:
         path = _delete_queue.get()
-        _win_safe_unlink(path)
+        safe_unlink(path)
 
 
 threading.Thread(target=_reaper_loop, daemon=True, name="tmp-reaper").start()
@@ -165,25 +113,25 @@ def _sync_models_locally(nas_source: Path, local_dest: Path) -> Path:
 
     if marker.exists():
         try:
-            if _win_safe_read_text(marker).strip() == nas_sig and nas_sig != "missing":
-                logger.info(f"[{WORKER_ID}] Local model cache already up to date: {local_dest}")
+            if safe_read_text(marker).strip() == nas_sig and nas_sig != "missing":
+                logger.info("Local model cache already up to date: %s", local_dest)
                 return local_dest
         except Exception:
             pass
 
     if nas_sig == "missing":
-        logger.error(f"[{WORKER_ID}] NAS model source not found: {nas_source}")
+        logger.error("NAS model source not found: %s", nas_source)
         return local_dest  # let docling fail loudly if it has to, don't crash here
 
-    logger.info(f"[{WORKER_ID}] Syncing models {nas_source} -> {local_dest} (one-time per machine)")
+    logger.info("Syncing models %s -> %s (one-time per machine)", nas_source, local_dest)
 
     if local_dest.exists():
         shutil.rmtree(local_dest, ignore_errors=True)
 
     shutil.copytree(nas_source, local_dest)
-    _win_safe_write_text(marker, nas_sig)
+    safe_write_text(marker, nas_sig)
 
-    logger.info(f"[{WORKER_ID}] Model sync done")
+    logger.info("Model sync done")
     return local_dest
 
 
@@ -226,16 +174,16 @@ def _get_converter(ocr: bool = False):
     with _model_init_lock:
         if not ocr:
             if _docling_converter is None:
-                logger.info(f"[{WORKER_ID}] Loading Docling (standard)...")
+                logger.info("Loading Docling (standard)...")
                 opts = PdfPipelineOptions(do_ocr=False)
                 _docling_converter = DocumentConverter(
                     format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
                 )
-                logger.info(f"[{WORKER_ID}] Docling loaded (standard)")
+                logger.info("Docling loaded (standard)")
             return _docling_converter
 
         if _docling_ocr_converter is None:
-            logger.info(f"[{WORKER_ID}] Initialising OCR converter (default models)")
+            logger.info("Initialising OCR converter (default models)")
 
             ocr_opts = EasyOcrOptions(
                 lang=["en"]
@@ -247,12 +195,13 @@ def _get_converter(ocr: bool = False):
                 format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
             )
 
-            logger.info(f"[{WORKER_ID}] Docling loaded (OCR)")
+            logger.info("Docling loaded (OCR)")
 
         return _docling_ocr_converter
 
 
 import fitz
+
 
 def _has_images(pdf_bytes: bytes) -> bool:
     try:
@@ -262,19 +211,19 @@ def _has_images(pdf_bytes: bytes) -> bool:
                 return True
         return False
     except Exception as e:
-        logger.warning(f"[{WORKER_ID}] PyMuPDF image check failed, defaulting to OCR: {e}")
+        logger.warning("PyMuPDF image check failed, defaulting to OCR: %s", e)
         return True
 
 
-@worker_log_process(WORKER_ID)
+@log_process
 def process_chunk(pdf_bytes: bytes, start_offset: int, ocr_enabled: bool = False) -> str:
     actual_ocr = False
     if ocr_enabled:
         if _has_images(pdf_bytes):
             actual_ocr = True
-            logger.info(f"[{WORKER_ID}] Chunk {start_offset} contains images. Using OCR converter.")
+            logger.info("Chunk %d contains images. Using OCR converter.", start_offset)
         else:
-            logger.info(f"[{WORKER_ID}] Chunk {start_offset} is pure text (0 images). Bypassing OCR for speed.")
+            logger.info("Chunk %d is pure text (0 images). Bypassing OCR for speed.", start_offset)
 
     converter = _get_converter(ocr=actual_ocr)
 
@@ -303,57 +252,17 @@ def process_chunk(pdf_bytes: bytes, start_offset: int, ocr_enabled: bool = False
 
     return "\n\n".join(parts) if parts else ""
 
-_session = requests.Session()
-_session.headers.update({"ngrok-skip-browser-warning": "true"})
+
+# ─── Persistent session ───────────────────────────────────────────────────────
+_session = create_session()
+
 # Moved off system temp. Windows disk cleanup / some AV tools sweep
 # %TEMP% on their own schedule — that defeats the entire point of a
 # crash/power-cut recovery cache. LOCALAPPDATA persists.
-RESULT_CACHE_DIR = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "worker_result_cache" / "text"
-RESULT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _cache_result(job_id: str, payload: dict):
-    path = RESULT_CACHE_DIR / f"{job_id}.json"
-    _win_safe_write_text(path, json.dumps(payload, ensure_ascii=False))
-
-
-def _clear_cached_result(job_id: str):
-    _win_safe_unlink(RESULT_CACHE_DIR / f"{job_id}.json")
-
-
-def _submit_with_retry(endpoint: str, payload: dict):
-    delay = 5
-    while True:
-        try:
-            r = _session.post(endpoint, json=payload, timeout=30)
-            if r.status_code == 200:
-                return
-            logger.warning(f"[{WORKER_ID}] Submit returned HTTP {r.status_code}, retrying in {delay}s...")
-        except requests.exceptions.ConnectionError:
-            logger.warning(f"[{WORKER_ID}] Connection error on submit, retrying in {delay}s...")
-
-        time.sleep(delay)
-        delay = min(delay * 2, 60)
-
-
-def _replay_cached_results():
-    cached = sorted(RESULT_CACHE_DIR.glob("*.json"))
-    if not cached:
-        return
-
-    logger.info(f"[{WORKER_ID}] Replaying {len(cached)} cached result(s)...")
-
-    for cache_file in cached:
-        try:
-            payload = json.loads(_win_safe_read_text(cache_file))
-            r = _session.post(f"{SERVER_URL}/submit_result", json=payload, timeout=30)
-            if r.status_code == 200:
-                _win_safe_unlink(cache_file)
-                logger.info(f"[{WORKER_ID}] Replayed and cleared: {cache_file.name}")
-            else:
-                logger.warning(f"[{WORKER_ID}] Replay failed HTTP {r.status_code}: {cache_file.name}")
-        except Exception as e:
-            logger.warning(f"[{WORKER_ID}] Replay error: {cache_file.name} -> {e}")
+_cache = ResultCache(
+    "text",
+    base_dir=Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "worker_result_cache",
+)
 
 
 is_connected = False
@@ -363,21 +272,21 @@ def start_worker():
     global is_connected
 
     logger.info("=" * 80)
-    logger.info(f"[{WORKER_ID}] TEXT WORKER STARTED (extraction mode)")
-    logger.info(f"[{WORKER_ID}] SERVER      : {SERVER_URL}")
-    logger.info(f"[{WORKER_ID}] BASE_DIR    : {BASE_DIR}")
-    logger.info(f"[{WORKER_ID}] MODEL_DIR   : ~/.cache/huggingface (local, built in image)")
-    logger.info(f"[{WORKER_ID}] CACHE_DIR   : {RESULT_CACHE_DIR}")
+    logger.info("TEXT WORKER STARTED (extraction mode)")
+    logger.info("SERVER      : %s", SERVER_URL)
+    logger.info("BASE_DIR    : %s", BASE_DIR)
+    logger.info("MODEL_DIR   : ~/.cache/huggingface (local, built in image)")
+    logger.info("CACHE_DIR   : %s", _cache.cache_dir)
     logger.info("=" * 80)
 
     time.sleep(random.uniform(0.5, 4.0))
 
-    _replay_cached_results()
+    _cache.replay(_session, f"{SERVER_URL}/submit_result")
 
     try:
         _get_converter(ocr=False)
     except Exception as e:
-        logger.error(f"[{WORKER_ID}] Model warm-up failed: {e}")
+        logger.error("Model warm-up failed: %s", e)
 
     while True:
         job_id = None
@@ -388,7 +297,7 @@ def start_worker():
             )
 
             if not is_connected:
-                logger.info(f"[{WORKER_ID}] Connected to server")
+                logger.info("Connected to server")
                 is_connected = True
 
             if resp.status_code != 200:
@@ -410,20 +319,20 @@ def start_worker():
             start_offset = data.get("start_offset", 0)
             ocr_enabled = data.get("ocr_enabled", False)
 
-            logger.info(f"[{WORKER_ID}] Processing chunk {chunk_idx} (book={book_id})")
+            logger.info("Processing chunk %d (book=%s)", chunk_idx, book_id)
 
             chunk_resp = _session.get(
                 f"{SERVER_URL}/chunk/{job_id}",
             )
 
             if chunk_resp.status_code != 200:
-                logger.error(f"[{WORKER_ID}] Failed to download chunk {job_id} (HTTP {chunk_resp.status_code})")
+                logger.error("Failed to download chunk %s (HTTP %d)", job_id, chunk_resp.status_code)
                 continue
 
             try:
                 content = process_chunk(chunk_resp.content, start_offset, ocr_enabled)
             except Exception as e:
-                logger.error(f"[{WORKER_ID}] Extraction failed for chunk {chunk_idx}: {e}")
+                logger.error("Extraction failed for chunk %d: %s", chunk_idx, e)
                 try:
                     _session.post(
                         f"{SERVER_URL}/submit_result",
@@ -436,7 +345,7 @@ def start_worker():
                         timeout=30,
                     )
                 except Exception as e2:
-                    logger.error(f"[{WORKER_ID}] Error submitting failure: {e2}")
+                    logger.error("Error submitting failure: %s", e2)
                 continue
 
             payload = {
@@ -446,20 +355,20 @@ def start_worker():
                 "content": content,
             }
 
-            _cache_result(job_id, payload)
-            _submit_with_retry(f"{SERVER_URL}/submit_result", payload)
-            _clear_cached_result(job_id)
+            _cache.store(job_id, payload)
+            submit_with_retry(_session, f"{SERVER_URL}/submit_result", payload)
+            _cache.clear(job_id)
 
-            logger.info(f"[{WORKER_ID}] Completed chunk {chunk_idx}")
+            logger.info("Completed chunk %d", chunk_idx)
 
         except requests.exceptions.ConnectionError:
             if is_connected:
-                logger.error(f"[{WORKER_ID}] Disconnected from server. Reconnecting...")
+                logger.error("Disconnected from server. Reconnecting...")
                 is_connected = False
             time.sleep(ERROR_SLEEP)
 
         except Exception as e:
-            logger.error(f"[{WORKER_ID}] Error: {e}")
+            logger.error("Error: %s", e)
             time.sleep(ERROR_SLEEP)
 
 

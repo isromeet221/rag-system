@@ -1,101 +1,59 @@
+"""
+qdrant_workers.py — Batch Qdrant ingestion worker.
+Polls the server for jobs, downloads data files, runs batch ingestion,
+and submits results with retry + local crash-safe caching.
+"""
+
 import os
-import json
-import socket
+import sys
 import tempfile
 import time
 import traceback
 import uuid
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from workers.logger import logger, worker_log_process, setup_worker_logger
-
 import requests
-from urllib3.connection import HTTPConnection
 
-# ── TCP keepalive — prevents idle connections from being silently dropped ──────
-# by load balancers / proxies / NAT gateways. Sends first probe after 60 s of
-# idle, then every 10 s, giving up after 5 failed probes (50 s window).
-HTTPConnection.default_socket_options = HTTPConnection.default_socket_options + [
-    (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
-    (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60),
-    (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10),
-    (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5),
-]
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from workers.logger import log_process, setup_worker_logger
+from workers.base_worker import (
+    create_session,
+    ResultCache,
+    submit_with_retry,
+)
 
 from parta.processing.ingest_qdrant import run_qdrant_batch
 
+# ─── Constants ────────────────────────────────────────────────────────────────
 SERVER_URL = os.environ.get("SERVER_URL", "http://127.0.0.1:8004")
 WORKER_ID = f"qdrant-{uuid.uuid4().hex[:6]}"
-setup_worker_logger("qdrant", WORKER_ID)
 BASE_DIR = Path(__file__).resolve().parent.parent / "parta"
 
-# ── persistent session — reuses TCP connection across all poll cycles ─────────
-_session = requests.Session()
-_session.headers.update({"ngrok-skip-browser-warning": "true"})
+# ─── Logger setup ─────────────────────────────────────────────────────────────
+logger = setup_worker_logger("qdrant", WORKER_ID)
 
-# ── local result cache — survives NAS disconnect ──────────────────────────────
-RESULT_CACHE_DIR = Path(tempfile.gettempdir()) / "worker_result_cache" / "qdrant"
-RESULT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+# ─── Persistent session — reuses TCP connection across all poll cycles ────────
+_session = create_session()
 
+# ─── Crash-safe result cache ──────────────────────────────────────────────────
+_cache = ResultCache("qdrant")
 
-def _cache_result(job_id: str, payload: dict):
-    path = RESULT_CACHE_DIR / f"{job_id}.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-
-
-def _clear_cached_result(job_id: str):
-    (RESULT_CACHE_DIR / f"{job_id}.json").unlink(missing_ok=True)
-
-
-def _submit_with_retry(endpoint: str, payload: dict):
-    delay = 5
-    while True:
-        try:
-            r = _session.post(endpoint, json=payload, timeout=30)
-            if r.status_code == 200:
-                return
-            logger.warning(f"[{WORKER_ID}] Submit returned HTTP {r.status_code}, retrying in {delay}s...")
-        except requests.exceptions.ConnectionError:
-            logger.warning(f"[{WORKER_ID}] Connection error on submit, retrying in {delay}s...")
-        time.sleep(delay)
-        delay = min(delay * 2, 60)
-
-
-def _replay_cached_results():
-    cached = sorted(RESULT_CACHE_DIR.glob("*.json"))
-    if not cached:
-        return
-    logger.info(f"[{WORKER_ID}] Replaying {len(cached)} cached result(s)...")
-    for cache_file in cached:
-        try:
-            with open(cache_file, encoding="utf-8") as f:
-                payload = json.load(f)
-            r = _session.post(f"{SERVER_URL}/submit_qdrant_result", json=payload, timeout=30)
-            if r.status_code == 200:
-                cache_file.unlink()
-                logger.info(f"[{WORKER_ID}] Replayed and cleared: {cache_file.name}")
-            else:
-                logger.warning(f"[{WORKER_ID}] Replay failed HTTP {r.status_code}: {cache_file.name}")
-        except Exception as e:
-            logger.warning(f"[{WORKER_ID}] Replay error for {cache_file.name}: {e}")
-
-
+# ─── Startup ──────────────────────────────────────────────────────────────────
 logger.info("=" * 80)
-logger.info(f"[{WORKER_ID}] QDRANT WORKER STARTED (batch mode)")
-logger.info(f"[{WORKER_ID}] SERVER      : {SERVER_URL}")
-logger.info(f"[{WORKER_ID}] BASE_DIR    : {BASE_DIR}")
-logger.info(f"[{WORKER_ID}] CACHE_DIR   : {RESULT_CACHE_DIR}")
+logger.info("QDRANT WORKER STARTED (batch mode)")
+logger.info("SERVER      : %s", SERVER_URL)
+logger.info("BASE_DIR    : %s", BASE_DIR)
+logger.info("CACHE_DIR   : %s", _cache.cache_dir)
 logger.info("=" * 80)
+
+# ── replay any results cached from a previous run before polling ──────────────
+_cache.replay(_session, f"{SERVER_URL}/submit_qdrant_result")
+
 is_connected = False
 
 
-# ── replay any results cached from a previous run before polling ──────────────
-_replay_cached_results()
-
-@worker_log_process(WORKER_ID)
+@log_process
 def execute_qdrant_batch(book_id, ready_path, prop_path, batch_start, batch_count, batch_kind):
     return run_qdrant_batch(
         book_id=book_id,
@@ -107,6 +65,8 @@ def execute_qdrant_batch(book_id, ready_path, prop_path, batch_start, batch_coun
         batch_kind=batch_kind,
     )
 
+
+# ─── Main polling loop ────────────────────────────────────────────────────────
 while True:
     job_id = None
     local_ready_path = None
@@ -119,11 +79,11 @@ while True:
         )
 
         if not is_connected:
-            logger.info(f"[{WORKER_ID}] Connected to server")
+            logger.info("Connected to server")
             is_connected = True
 
         if r.status_code != 200:
-            logger.error(f"[{WORKER_ID}] Failed to get job ({r.status_code})")
+            logger.error("Failed to get job (HTTP %d)", r.status_code)
             time.sleep(5)
             continue
 
@@ -133,28 +93,28 @@ while True:
             time.sleep(2)
             continue
 
-        job_id       = job["job_id"]
-        book_id      = job["book_id"]
-        batch_start  = job.get("start_offset", 0)
-        batch_count  = job.get("page_count", 0)
-        batch_idx    = job.get("chunk_idx", 0)
+        job_id = job["job_id"]
+        book_id = job["book_id"]
+        batch_start = job.get("start_offset", 0)
+        batch_count = job.get("page_count", 0)
+        batch_idx = job.get("chunk_idx", 0)
         # batch_kind is encoded in chunk_path field by the server
-        batch_kind   = job.get("chunk_path", "propositions")
-        # ready_path and prop_path from job response are server-side paths — do not use directly
+        batch_kind = job.get("chunk_path", "propositions")
 
         logger.info("\n" + "=" * 80)
-        logger.info(f"[{WORKER_ID}] NEW QDRANT BATCH JOB")
-        logger.info(f"[{WORKER_ID}] JOB ID     : {job_id}")
-        logger.info(f"[{WORKER_ID}] BOOK ID    : {book_id}")
-        logger.info(f"[{WORKER_ID}] KIND       : {batch_kind}")
-        logger.info(f"[{WORKER_ID}] BATCH      : #{batch_idx} ({batch_kind} {batch_start}–{batch_start + batch_count - 1})")
+        logger.info("NEW QDRANT BATCH JOB")
+        logger.info("JOB ID     : %s", job_id)
+        logger.info("BOOK ID    : %s", book_id)
+        logger.info("KIND       : %s", batch_kind)
+        logger.info(
+            "BATCH      : #%s (%s %d–%d)",
+            batch_idx, batch_kind, batch_start, batch_start + batch_count - 1,
+        )
         logger.info("=" * 80)
 
         # ── download ready.json from server ───────────────────────────────────
-        logger.info(f"[{WORKER_ID}] Downloading ready file for '{book_id}'...")
-        r2 = _session.get(
-            f"{SERVER_URL}/download_ready/{book_id}",
-        )
+        logger.info("Downloading ready file for '%s'...", book_id)
+        r2 = _session.get(f"{SERVER_URL}/download_ready/{book_id}")
         if r2.status_code != 200:
             raise RuntimeError(
                 f"download_ready failed: HTTP {r2.status_code} — {r2.text[:200]}"
@@ -167,10 +127,8 @@ while True:
             local_ready_path = f.name
 
         # ── download prop.json from server ────────────────────────────────────
-        logger.info(f"[{WORKER_ID}] Downloading prop file for '{book_id}'...")
-        r3 = _session.get(
-            f"{SERVER_URL}/download_prop/{book_id}",
-        )
+        logger.info("Downloading prop file for '%s'...", book_id)
+        r3 = _session.get(f"{SERVER_URL}/download_prop/{book_id}")
         if r3.status_code != 200:
             raise RuntimeError(
                 f"download_prop failed: HTTP {r3.status_code} — {r3.text[:200]}"
@@ -182,7 +140,10 @@ while True:
             f.write(r3.content)
             local_prop_path = f.name
 
-        logger.info(f"[{WORKER_ID}] Files ready — running batch ingestion ({batch_kind} {batch_start}–{batch_start + batch_count - 1})...")
+        logger.info(
+            "Files ready — running batch ingestion (%s %d–%d)...",
+            batch_kind, batch_start, batch_start + batch_count - 1,
+        )
 
         # ── run batch ingestion ────────────────────────────────────────────────
         chunks_stored = execute_qdrant_batch(
@@ -199,23 +160,23 @@ while True:
                 "batch_kind": batch_kind,
                 "batch_start": batch_start,
                 "batch_count": batch_count,
-            }
+            },
         }
-        _cache_result(job_id, payload)
-        _submit_with_retry(f"{SERVER_URL}/submit_qdrant_result", payload)
-        _clear_cached_result(job_id)
-        logger.info(f"[{WORKER_ID}] Completion acknowledged for batch #{batch_idx} ({batch_kind})")
+        _cache.store(job_id, payload)
+        submit_with_retry(_session, f"{SERVER_URL}/submit_qdrant_result", payload)
+        _cache.clear(job_id)
+        logger.info("Completion acknowledged for batch #%s (%s)", batch_idx, batch_kind)
 
     except requests.exceptions.ConnectionError:
         if is_connected:
-            logger.error(f"[{WORKER_ID}] Disconnected from server. Waiting to reconnect...")
+            logger.error("Disconnected from server. Waiting to reconnect...")
             is_connected = False
         else:
-            logger.error(f"[{WORKER_ID}] Failed to connect to server at {SERVER_URL}. Retrying...")
+            logger.error("Failed to connect to server at %s. Retrying...", SERVER_URL)
         time.sleep(5)
 
     except Exception as e:
-        logger.error(f"[{WORKER_ID}] Error: {e}")
+        logger.error("Error: %s", e)
         logger.error(traceback.format_exc())
 
         if job_id:
