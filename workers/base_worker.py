@@ -14,8 +14,6 @@ Provides:
 import json
 import logging
 import socket
-import struct
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -36,12 +34,8 @@ _log = logging.getLogger(__name__)
 
 _keepalive_applied = False
 
-# SIO_KEEPALIVE_VALS control code (0x98000004 as a signed 32-bit int)
-KEEPALIVE_CODE = -1744830460
-
-# struct tcp_keepalive { u_long onoff; u_long keepalivetime; u_long keepaliveinterval; }
-# All values in milliseconds.
-_keepalive_buf = struct.pack("III", 1, 60_000, 10_000)  # on, 60 s idle, 10 s interval
+# (onoff, idle_ms, interval_ms) — Windows socket.ioctl expects a 3-int seq.
+_keepalive_vals = (1, 60_000, 10_000)  # on, 60 s idle, 10 s interval
 
 _real_new_conn = HTTPConnection._new_conn
 
@@ -49,11 +43,10 @@ _real_new_conn = HTTPConnection._new_conn
 def _new_conn(self: HTTPConnection):
     """Create socket, set SO_KEEPALIVE, then apply Windows keepalive timing."""
     conn = _real_new_conn(self)
-    if sys.platform == "win32":
-        try:
-            conn.ioctl(KEEPALIVE_CODE, _keepalive_buf)
-        except OSError:
-            _log.warning("WSAIoctl failed; keepalive timing may use system defaults")
+    try:
+        conn.ioctl(socket.SIO_KEEPALIVE_VALS, _keepalive_vals)
+    except OSError:
+        _log.warning("WSAIoctl failed; keepalive timing may use system defaults")
     return conn
 
 
