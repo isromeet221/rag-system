@@ -1,5 +1,6 @@
 import os
 import json
+import socket
 import time
 import uuid
 import tempfile
@@ -11,6 +12,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from workers.logger import logger, worker_log_process, setup_worker_logger
 
 import requests
+from urllib3.connection import HTTPConnection
+
+# ── TCP keepalive — prevents idle connections from being silently dropped ──────
+# by load balancers / proxies / NAT gateways. Sends first probe after 60 s of
+# idle, then every 10 s, giving up after 5 failed probes (50 s window).
+HTTPConnection.default_socket_options = HTTPConnection.default_socket_options + [
+    (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+    (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60),
+    (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10),
+    (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5),
+]
 
 from parta.processing.ingest_neo4j import run_neo4j_batch
 
@@ -102,7 +114,6 @@ while True:
         r = _session.get(
             f"{SERVER_URL}/get_neo4j_job",
             params={"worker_id": WORKER_ID},
-            timeout=1800,
         )
 
         if not is_connected:
@@ -136,7 +147,6 @@ while True:
         logger.info(f"[{WORKER_ID}] Downloading ready file for '{book_id}'...")
         r2 = _session.get(
             f"{SERVER_URL}/download_ready/{book_id}",
-            timeout=1800,
         )
         if r2.status_code != 200:
             raise RuntimeError(

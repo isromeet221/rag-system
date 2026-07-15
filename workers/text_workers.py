@@ -25,6 +25,18 @@ from pathlib import Path
 
 from workers.logger import logger, worker_log_process, setup_worker_logger
 import requests
+import socket
+from urllib3.connection import HTTPConnection
+
+# ── TCP keepalive — prevents idle connections from being silently dropped ──────
+# by load balancers / proxies / NAT gateways. Sends first probe after 60 s of
+# idle, then every 10 s, giving up after 5 failed probes (50 s window).
+HTTPConnection.default_socket_options = HTTPConnection.default_socket_options + [
+    (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+    (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60),
+    (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10),
+    (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5),
+]
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -41,7 +53,6 @@ import accelerate  # noqa: F401
 
 SERVER_URL = os.environ.get("SERVER_URL", "http://127.0.0.1:8004")
 
-REQUEST_TIMEOUT = 30
 WAIT_SLEEP = 2
 ERROR_SLEEP = 5
 
@@ -374,7 +385,6 @@ def start_worker():
             resp = _session.get(
                 f"{SERVER_URL}/get_job",
                 params={"worker_id": WORKER_ID},
-                timeout=REQUEST_TIMEOUT,
             )
 
             if not is_connected:
@@ -404,7 +414,6 @@ def start_worker():
 
             chunk_resp = _session.get(
                 f"{SERVER_URL}/chunk/{job_id}",
-                timeout=REQUEST_TIMEOUT,
             )
 
             if chunk_resp.status_code != 200:
@@ -424,7 +433,7 @@ def start_worker():
                             "success": False,
                             "content": "",
                         },
-                        timeout=REQUEST_TIMEOUT,
+                        timeout=30,
                     )
                 except Exception as e2:
                     logger.error(f"[{WORKER_ID}] Error submitting failure: {e2}")
