@@ -14,6 +14,8 @@ Provides:
 import json
 import logging
 import socket
+import struct
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -25,8 +27,34 @@ from urllib3.connection import HTTPConnection
 _log = logging.getLogger(__name__)
 
 # ─── TCP keepalive ────────────────────────────────────────────────────────────
+#
+# Windows uses WSAIoctl (SIO_KEEPALIVE_VALS) to configure keepalive timing
+# because setsockopt only exposes SO_KEEPALIVE (on/off).  The default idle
+# time is 2 hours — useless for workers behind NAT/proxies that drop idle
+# connections in 60-300 s.  We monkey-patch HTTPConnection._new_conn so
+# every socket gets Windows keepalive applied at creation time.
 
 _keepalive_applied = False
+
+# SIO_KEEPALIVE_VALS control code (0x98000004 as a signed 32-bit int)
+KEEPALIVE_CODE = -1744830460
+
+# struct tcp_keepalive { u_long onoff; u_long keepalivetime; u_long keepaliveinterval; }
+# All values in milliseconds.
+_keepalive_buf = struct.pack("III", 1, 60_000, 10_000)  # on, 60 s idle, 10 s interval
+
+_real_new_conn = HTTPConnection._new_conn
+
+
+def _new_conn(self: HTTPConnection):
+    """Create socket, set SO_KEEPALIVE, then apply Windows keepalive timing."""
+    conn = _real_new_conn(self)
+    if sys.platform == "win32":
+        try:
+            conn.ioctl(KEEPALIVE_CODE, _keepalive_buf)
+        except OSError:
+            _log.warning("WSAIoctl failed; keepalive timing may use system defaults")
+    return conn
 
 
 def configure_tcp_keepalive():
@@ -34,18 +62,20 @@ def configure_tcp_keepalive():
 
     Idempotent — safe to call multiple times or from multiple worker modules.
     Prevents idle connections from being silently dropped by load balancers,
-    proxies, and NAT gateways. Sends first probe after 60 s of idle, then
-    every 10 s, giving up after 5 failed probes (50 s window).
+    proxies, and NAT gateways.
+
+    - Enables SO_KEEPALIVE on every socket.
+    - On Windows: additionally configures timing via WSAIoctl
+      (first probe after 60 s idle, then every 10 s).
     """
     global _keepalive_applied
     if _keepalive_applied:
         return
+
     HTTPConnection.default_socket_options = HTTPConnection.default_socket_options + [
         (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
-        (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60),
-        (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10),
-        (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5),
     ]
+    HTTPConnection._new_conn = _new_conn
     _keepalive_applied = True
 
 
