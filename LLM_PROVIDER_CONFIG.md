@@ -8,7 +8,7 @@ This system uses a **tiered fallback** for LLM inference:
 
 2. **Fallback**: [LiteLLM](https://github.com/BerriAI/litellm) (OpenAI-compatible)
    - Default: `http://127.0.0.1:4000/v1`
-   - Enable/disable with `USE_LITELLM_FALLBACK=true|false` (default: `true`).
+   - Automatically attempted when Ollama LB fails.
    - Set API key via `LITELLM_API_KEY` (if required).
 
 3. **Final Fallback**: Direct Ollama
@@ -27,7 +27,6 @@ export OLLAMA_STREAM_PORT=11434  # Port for streaming from GPU nodes
 # LiteLLM (Fallback)
 export LITELLM_BASE_URL="http://your-litellm-server:4000/v1"
 export LITELLM_API_KEY="your-api-key"  # Optional
-export USE_LITELLM_FALLBACK=true        # Default: true
 
 # Direct Ollama (Final Fallback)
 export OLLAMA_URL="http://localhost:11434"
@@ -87,13 +86,13 @@ ollama pull mistral:7b-instruct
 
 ## Disabling Fallbacks
 
-To **disable LiteLLM fallback** and only use Ollama LB + Direct Ollama:
+To **disable LiteLLM fallback** and only use Ollama LB + Direct Ollama, set LiteLLM to an unreachable URL:
 ```bash
-export USE_LITELLM_FALLBACK=false
+export LITELLM_BASE_URL="http://127.0.0.1:1/v1"
 ```
 
 To **disable all fallbacks** and only use Ollama LB:
 ```bash
-export USE_LITELLM_FALLBACK=false
+export LITELLM_BASE_URL="http://127.0.0.1:1/v1"
 export OLLAMA_URL=""  # Disable direct Ollama
 ```

@@ -16,7 +16,6 @@ from partb.config import (
     OLLAMA_URL,
     OLLAMA_LB_URL,
     OLLAMA_STREAM_PORT,
-    USE_LITELLM_FALLBACK,
 )
 
 
@@ -66,27 +65,26 @@ async def stream_llm(
     except Exception as e:
         logger.warning("[OLLAMA-LB] Failed, falling back to LiteLLM: %s", e)
         
-    # Fallback to LiteLLM if enabled
+    # Fallback to LiteLLM
     litellm_failed = False
     tokens_yielded = 0
-    if USE_LITELLM_FALLBACK:
-        try:
-            async for ev in _stream_litellm(messages, mode, cfg, timeout):
-                if ev.get("type") == "error":
-                    logger.warning("[LITELLM] yielded error: %s", ev.get("message"))
-                    if tokens_yielded == 0:
-                        litellm_failed = True
-                        break
-                    else:
-                        yield ev
-                        return
-                if ev.get("type") == "token":
-                    tokens_yielded += 1
-                yield ev
-            if not litellm_failed:
-                return
-        except Exception as e:
-            logger.warning("[LITELLM] Failed, falling back to direct Ollama: %s", e)
+    try:
+        async for ev in _stream_litellm(messages, mode, cfg, timeout):
+            if ev.get("type") == "error":
+                logger.warning("[LITELLM] yielded error: %s", ev.get("message"))
+                if tokens_yielded == 0:
+                    litellm_failed = True
+                    break
+                else:
+                    yield ev
+                    return
+            if ev.get("type") == "token":
+                tokens_yielded += 1
+            yield ev
+        if not litellm_failed:
+            return
+    except Exception as e:
+        logger.warning("[LITELLM] Failed, falling back to direct Ollama: %s", e)
     
     # Final fallback to direct Ollama
     async for ev in _stream_ollama(messages, mode, cfg, timeout):

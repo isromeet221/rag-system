@@ -36,7 +36,6 @@ JWT_EXPIRE_HOURS =8
 # LiteLLM OpenAI-compatible proxy (Fallback)
 LITELLM_BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:4000/v1")
 LITELLM_API_KEY = os.environ.get("LITELLM_API_KEY", "")
-USE_LITELLM_FALLBACK = os.environ.get("USE_LITELLM_FALLBACK", "true").lower() == "true"
 
 # Ollama Load Balancer (Primary)
 OLLAMA_LB_URL = os.environ.get("OLLAMA_LB_URL", "http://127.0.0.1:5050")
