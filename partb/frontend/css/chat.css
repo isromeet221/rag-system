@@ -476,6 +476,8 @@
   color: var(--ink);
   border: 1px solid var(--hairline);
   white-space: normal;
+  /* Prevent layout reflow flicker during token-by-token streaming */
+  contain: layout;
 }
 
 .message.bot .message-content .highlight {

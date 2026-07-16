@@ -32,6 +32,30 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
+// In-place update of the last bot message's content — avoids full DOM rebuild flicker
+function updateLastBotContent(text) {
+  if (!el.messageThread) return;
+  var msgs = el.messageThread.querySelectorAll('.message.bot');
+  if (msgs.length === 0) return;
+  var last = msgs[msgs.length - 1];
+  var contentDiv = last.querySelector('.message-content');
+  if (!contentDiv) return;
+
+  // Strip citation patterns before markdown parsing
+  var cleanText = text.replace(/\[Book:[^\]]*?\]/g, '');
+
+  if (window.marked) {
+    contentDiv.innerHTML = marked.parse(cleanText, { breaks: true });
+  } else {
+    contentDiv.textContent = text;
+  }
+
+  // Auto-scroll to bottom
+  if (el.chatMessages) {
+    el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
+  }
+}
+
 if (!localStorage.getItem('krutrim-auth')) {
   window.location.href = '/pages/login.html';
 }
@@ -101,11 +125,11 @@ async function sendMessage(text) {
         
         if (evt.type === "status") {
             s.messages[s.messages.length - 1].text = `Thinking: ${evt.message}...`;
-            renderMessages();
+            updateLastBotContent(s.messages[s.messages.length - 1].text);
         } else if (evt.type === "token") {
           fulltext += evt.content;
           s.messages[s.messages.length - 1].text = fulltext;
-          renderMessages();
+          updateLastBotContent(fulltext);
         } else if (evt.type === "done") {
           sources = evt.sources || [];
           s.messages[s.messages.length - 1].sources = sources;
