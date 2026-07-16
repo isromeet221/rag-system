@@ -485,7 +485,8 @@ function _rebindDropdownItems(dropdownId, toggleId, labelId, selectId, menuId) {
       select.value = val;
       label.textContent = text;
       label.style.color = 'var(--ink)';
-      // Don't close the dropdown — initCustomFormDropdown manages open/close state
+      dropdown.classList.remove('open');
+      menu.classList.remove('open');
     });
   });
 }

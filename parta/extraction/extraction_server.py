@@ -203,15 +203,20 @@ def _assign_pending_job(
         )
         # ── Don't count busy higher-priority workers as available ────────
         busy_ips: set = set()
+        live_assigned = set()
         for state in store.values():
             if state["is_finished"]:
                 continue
             for job in state["jobs"].values():
-                if job["status"] != "PROCESSING" or not job["assigned_to"]:
-                    continue
-                ip = worker_ip_map.get(job["assigned_to"])
-                if ip and ip in WORKER_PRIORITY_IPS[:rank]:
-                    busy_ips.add(ip)
+                if job["status"] == "PROCESSING" and job["assigned_to"]:
+                    live_assigned.add(job["assigned_to"])
+                    ip = worker_ip_map.get(job["assigned_to"])
+                    if ip and ip in WORKER_PRIORITY_IPS[:rank]:
+                        busy_ips.add(ip)
+        # Drop stale worker_ip_map entries for workers no longer assigned.
+        for wid in list(worker_ip_map.keys()):
+            if wid not in live_assigned:
+                del worker_ip_map[wid]
         idle_higher_priority = active_higher_priority - len(busy_ips)
         pending_jobs = sum(
             1
