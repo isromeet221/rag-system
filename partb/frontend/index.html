@@ -203,27 +203,8 @@
               <span id="modal-book-label" style="color: var(--mute);">Choose a book...</span>
               <svg class="chevron-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--mute); transition: transform 0.2s;"><polyline points="6 9 12 15 18 9"></polyline></svg>
             </button>
-            <div class="dropdown-menu" id="modal-book-menu">
-              <button type="button" class="dropdown-item book-dropdown-item" data-value="clean-code">
-                <span class="book-item-title">Clean Code</span>
-                <span class="book-item-meta">Robert C. Martin &nbsp;·&nbsp; 464 pages &nbsp;·&nbsp; 1,856 chunks</span>
-              </button>
-              <button type="button" class="dropdown-item book-dropdown-item" data-value="pragmatic-programmer">
-                <span class="book-item-title">The Pragmatic Programmer</span>
-                <span class="book-item-meta">Andy Hunt &amp; Dave Thomas &nbsp;·&nbsp; 352 pages &nbsp;·&nbsp; 1,408 chunks</span>
-              </button>
-              <button type="button" class="dropdown-item book-dropdown-item" data-value="sicp">
-                <span class="book-item-title">Structure &amp; Interpretation of Computer Programs</span>
-                <span class="book-item-meta">Abelson &amp; Sussman &nbsp;·&nbsp; 657 pages &nbsp;·&nbsp; 2,628 chunks</span>
-              </button>
-              <button type="button" class="dropdown-item book-dropdown-item" data-value="clrs">
-                <span class="book-item-title">Introduction to Algorithms (CLRS)</span>
-                <span class="book-item-meta">Cormen et al. &nbsp;·&nbsp; 1,312 pages &nbsp;·&nbsp; 5,248 chunks</span>
-              </button>
-              <button type="button" class="dropdown-item book-dropdown-item" data-value="ydkjs">
-                <span class="book-item-title">You Don't Know JS</span>
-                <span class="book-item-meta">Kyle Simpson &nbsp;·&nbsp; 250 pages &nbsp;·&nbsp; 1,000 chunks</span>
-              </button>
+            <div class="dropdown-menu" id="modal-book-menu" style="top: 100%; bottom: auto; width: 100%; max-height: 200px; overflow-y: auto; margin-top: 4px;">
+              <!-- Populated dynamically from /library API -->
             </div>
             <input type="hidden" id="modal-book-select" required>
           </div>
@@ -283,26 +264,7 @@
               <svg class="chevron-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--mute); transition: transform 0.2s;"><polyline points="6 9 12 15 18 9"></polyline></svg>
             </button>
             <div class="dropdown-menu" id="delete-book-menu" style="top: 100%; bottom: auto; width: 100%; max-height: 200px; overflow-y: auto; margin-top: 4px;">
-              <button type="button" class="dropdown-item" data-value="clean-code" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-                <span style="font-size: 14px;">Clean Code — Robert C. Martin</span>
-                <span style="font-size: 12px; color: var(--mute); margin-left: 12px; white-space: nowrap;">464 pages, 1,856 chunks</span>
-              </button>
-              <button type="button" class="dropdown-item" data-value="pragmatic-programmer" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-                <span style="font-size: 14px;">The Pragmatic Programmer — Andy Hunt & Dave Thomas</span>
-                <span style="font-size: 12px; color: var(--mute); margin-left: 12px; white-space: nowrap;">352 pages, 1,408 chunks</span>
-              </button>
-              <button type="button" class="dropdown-item" data-value="sicp" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-                <span style="font-size: 14px;">Structure & Interpretation of Computer Programs</span>
-                <span style="font-size: 12px; color: var(--mute); margin-left: 12px; white-space: nowrap;">657 pages, 2,628 chunks</span>
-              </button>
-              <button type="button" class="dropdown-item" data-value="clrs" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-                <span style="font-size: 14px;">Introduction to Algorithms (CLRS)</span>
-                <span style="font-size: 12px; color: var(--mute); margin-left: 12px; white-space: nowrap;">1,312 pages, 5,248 chunks</span>
-              </button>
-              <button type="button" class="dropdown-item" data-value="ydkjs" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-                <span style="font-size: 14px;">You Don't Know JS — Kyle Simpson</span>
-                <span style="font-size: 12px; color: var(--mute); margin-left: 12px; white-space: nowrap;">250 pages, 1,000 chunks</span>
-              </button>
+              <!-- Populated dynamically from /library API -->
             </div>
             <input type="hidden" id="delete-book-select" required>
           </div>

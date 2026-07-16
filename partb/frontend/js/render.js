@@ -409,6 +409,87 @@ export function closeSearchModal() {
   }
 }
 
+export function populateBookDropdowns(books) {
+  // Populate modal-book-menu
+  var modalMenu = document.getElementById('modal-book-menu');
+  var deleteMenu = document.getElementById('delete-book-menu');
+  
+  if (modalMenu) {
+    modalMenu.innerHTML = '';
+  }
+  if (deleteMenu) {
+    deleteMenu.innerHTML = '';
+  }
+  
+  if (!books || books.length === 0) return;
+  
+  books.forEach(function(b) {
+    var title = b.title || b.book_id;
+    var pages = b.total_pages || 0;
+    var chunks = b.total_chunks || 0;
+    
+    if (modalMenu) {
+      var item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'dropdown-item book-dropdown-item';
+      item.setAttribute('data-value', b.book_id);
+      item.innerHTML =
+        '<span class="book-item-title">' + escapeHtml(title) + '</span>' +
+        '<span class="book-item-meta">' + pages + ' pages &nbsp;·&nbsp; ' + chunks + ' chunks</span>';
+      modalMenu.appendChild(item);
+    }
+    
+    if (deleteMenu) {
+      var delItem = document.createElement('button');
+      delItem.type = 'button';
+      delItem.className = 'dropdown-item';
+      delItem.setAttribute('data-value', b.book_id);
+      delItem.style.cssText = 'display: flex; justify-content: space-between; align-items: center; width: 100%;';
+      delItem.innerHTML =
+        '<span style="font-size: 14px;">' + escapeHtml(title) + '</span>' +
+        '<span style="font-size: 12px; color: var(--mute); margin-left: 12px; white-space: nowrap;">' + pages + ' pages, ' + chunks + ' chunks</span>';
+      deleteMenu.appendChild(delItem);
+    }
+  });
+  
+  // Re-bind click handlers on the NEW items for each dropdown
+  // (initCustomFormDropdown already set up toggle/document handlers at module level)
+  _rebindDropdownItems('modal-book-dropdown', 'modal-book-toggle', 'modal-book-label', 'modal-book-select', 'modal-book-menu');
+  _rebindDropdownItems('delete-book-dropdown', 'delete-book-toggle', 'delete-book-label', 'delete-book-select', 'delete-book-menu');
+}
+
+function _rebindDropdownItems(dropdownId, toggleId, labelId, selectId, menuId) {
+  var dropdown = document.getElementById(dropdownId);
+  var toggle = document.getElementById(toggleId);
+  var label = document.getElementById(labelId);
+  var select = document.getElementById(selectId);
+  var menu = document.getElementById(menuId);
+  if (!dropdown || !toggle || !menu) return;
+  
+  var items = menu.querySelectorAll('.dropdown-item');
+  
+  items.forEach(function(item) {
+    // Remove old listeners by cloning (cleanest way)
+    var clone = item.cloneNode(true);
+    item.parentNode.replaceChild(clone, item);
+    
+    clone.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var allItems = menu.querySelectorAll('.dropdown-item');
+      allItems.forEach(function(i) { i.classList.remove('selected'); });
+      clone.classList.add('selected');
+      
+      var val = clone.getAttribute('data-value');
+      var titleEl = clone.querySelector('.book-item-title') || clone.querySelector('span');
+      var text = titleEl ? titleEl.textContent.trim() : val;
+      select.value = val;
+      label.textContent = text;
+      label.style.color = 'var(--ink)';
+      // Don't close the dropdown — initCustomFormDropdown manages open/close state
+    });
+  });
+}
+
 export function initCustomFormDropdown(dropdownId, toggleId, labelId, selectId, menuId) {
   var dropdown = document.getElementById(dropdownId);
   var toggle = document.getElementById(toggleId);

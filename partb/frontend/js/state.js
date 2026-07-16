@@ -6,13 +6,27 @@ export const state = {
   nextId: 100, // Not really needed if API provides IDs
 };
 
-export const booksMap = {
-  'clean-code': { name: 'Clean Code', pages: 464, chunks: 1856 },
-  'pragmatic-programmer': { name: 'The Pragmatic Programmer', pages: 352, chunks: 1408 },
-  'sicp': { name: 'SICP', pages: 657, chunks: 2628 },
-  'clrs': { name: 'CLRS Algorithms', pages: 1312, chunks: 5248 },
-  'ydkjs': { name: "You Don't Know JS", pages: 250, chunks: 1000 }
-};
+export const booksMap = {};
+
+export async function loadBooks() {
+  try {
+    const res = await apiFetch('/library');
+    if (!res) return;
+    const data = await res.json();
+    const books = data.books || [];
+    for (const b of books) {
+      booksMap[b.book_id] = {
+        name: b.title || b.book_id,
+        pages: b.total_pages || 0,
+        chunks: b.total_chunks || 0
+      };
+    }
+    return books;
+  } catch (e) {
+    console.error("Failed to load books", e);
+    return [];
+  }
+}
 
 export function authHeaders() {
   const token = localStorage.getItem("kr_token");
@@ -50,7 +64,7 @@ export async function loadChats() {
         state.sessionMap[id] = {
           id: id,
           name: chat.title || 'Untitled',
-          book: (chat.book_ids && chat.book_ids[0]) || chat.book_id || 'clean-code',
+          book: (chat.book_ids && chat.book_ids[0]) || chat.book_id || '',
           model: chat.default_mode || chat.model || 'balanced',
           messages: [] // loaded on demand
         };

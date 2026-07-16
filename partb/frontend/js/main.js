@@ -1,4 +1,4 @@
-import { state, booksMap, API, apiFetch, authHeaders, loadChats, loadMessages } from './state.js';
+import { state, booksMap, API, apiFetch, authHeaders, loadChats, loadMessages, loadBooks } from './state.js';
 import {
   el, renderSessions, renderMessages, updateHeader,
   showTypingIndicator, removeTypingIndicator,
@@ -6,7 +6,7 @@ import {
   openDeleteContextModal, closeDeleteContextModal,
   openSettingsModal, closeSettingsModal,
   openSearchModal, closeSearchModal,
-  initCustomFormDropdown
+  initCustomFormDropdown, populateBookDropdowns
 } from './render.js?v=32';
 import { initPdfViewer } from './pdf.js?v=32';
 
@@ -142,9 +142,14 @@ async function sendMessage(text) {
 
 async function createNewSession(title, book, model) {
   try {
+    var fallbackBook = book || Object.keys(booksMap)[0] || null;
+    if (!fallbackBook) {
+      alert('No books available. Please upload a book first.');
+      return;
+    }
     const res = await apiFetch("/chats", {
       method: "POST",
-      body: JSON.stringify({ book_ids: [book || "clean-code"], default_mode: model || "balanced", title: title || "New Chat" })
+      body: JSON.stringify({ book_ids: [fallbackBook], default_mode: model || "balanced", title: title || "New Chat" })
     });
     if(!res || !res.ok) return;
     const data = await res.json();
@@ -635,12 +640,18 @@ if (el.searchModal) {
   el.searchModal.addEventListener('click', function(e) { if (e.target === el.searchModal) closeSearchModal(); });
 }
 
-// Init
+// Init — initialize dropdowns and PDF viewer at module level
 initCustomFormDropdown('modal-book-dropdown', 'modal-book-toggle', 'modal-book-label', 'modal-book-select', 'modal-book-menu');
 initCustomFormDropdown('delete-book-dropdown', 'delete-book-toggle', 'delete-book-label', 'delete-book-select', 'delete-book-menu');
 initPdfViewer();
 
 async function init() {
+  // Load real books from API
+  const books = await loadBooks();
+  if (books && books.length > 0) {
+    populateBookDropdowns(books);
+  }
+  
   let currentUser = null;
   try {
     currentUser = JSON.parse(localStorage.getItem('kr_user'));

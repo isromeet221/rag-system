@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from partb.logger import time_it, async_time_it, logger
+from partb.logger import time_it, logger
 
 import time
 
@@ -36,7 +36,6 @@ def _prompt_from_messages(messages: list[dict[str, str]]) -> str:
     return "\n\n".join(parts)
 
 
-@async_time_it
 async def stream_llm(
     messages: list[dict[str, str]],
     mode: str,
@@ -94,7 +93,6 @@ async def stream_llm(
         yield ev
 
 
-@async_time_it
 async def _stream_via_ollama_lb(
     prompt: str,
     model: str,
@@ -153,6 +151,7 @@ async def _stream_via_ollama_lb(
                     err_text = err.decode(errors='replace')[:1000]
                     logger.error("[OLLAMA-LB] Stream HTTP error | status=%s | body=%s", resp.status_code, err_text)
                     yield {"type": "error", "message": f"Stream HTTP {resp.status_code}: {err_text[:500]}"}
+                    _release_ollama_lb_server(allocated_server)
                     return
 
                 async for line in resp.aiter_lines():
@@ -177,15 +176,17 @@ async def _stream_via_ollama_lb(
                 else:
                     logger.info("[OLLAMA-LB] Stream complete | server=%s | model=%s | tokens=%s | chars=%s | elapsed=%.2fs", allocated_server, allocated_model, token_count, char_count, t_end - t0)
 
+                # -- 3. Release the GPU server back to the pool --
+                _release_ollama_lb_server(allocated_server)
+
         except httpx.TimeoutException:
             logger.error("[OLLAMA-LB] Stream timeout | timeout=%s | server=%s | elapsed=%.2fs", timeout, allocated_server, time.perf_counter() - t0)
+            _release_ollama_lb_server(allocated_server)
             yield {"type": "error", "message": f"Stream timeout after {timeout}s on {allocated_server}"}
         except Exception as e:
             logger.exception("[OLLAMA-LB] Stream error | server=%s", allocated_server)
-            yield {"type": "error", "message": f"Stream error on {allocated_server}: {e}"}
-        finally:
-            # -- 3. Release the GPU server back to the pool --
             _release_ollama_lb_server(allocated_server)
+            yield {"type": "error", "message": f"Stream error on {allocated_server}: {e}"}
 
 
 def _release_ollama_lb_server(server_ip: str | None) -> None:
@@ -202,7 +203,6 @@ def _release_ollama_lb_server(server_ip: str | None) -> None:
         logger.warning("[OLLAMA-LB] Release server failed | server=%s | error=%s", server_ip, e)
 
 
-@async_time_it
 async def _stream_litellm(
     messages: list[dict[str, str]],
     mode: str,
@@ -254,7 +254,6 @@ async def _stream_litellm(
             yield {"type": "error", "message": f"LLM stream error: {e}"}
 
 
-@async_time_it
 async def _stream_ollama(
     messages: list[dict[str, str]],
     mode: str,
