@@ -36,14 +36,13 @@ JWT_EXPIRE_HOURS =8
 # LiteLLM OpenAI-compatible proxy (Fallback)
 LITELLM_BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:4000/v1")
 LITELLM_API_KEY = os.environ.get("LITELLM_API_KEY", "")
+LITELLM_MODEL = os.environ.get("LITELLM_MODEL", "mistral:7b-instruct")
 
 # Ollama Load Balancer (Primary)
 OLLAMA_LB_URL = os.environ.get("OLLAMA_LB_URL", "http://127.0.0.1:5050")
 OLLAMA_LB_PORT = int(os.environ.get("OLLAMA_LB_PORT", "5050"))
 OLLAMA_STREAM_PORT = int(os.environ.get("OLLAMA_STREAM_PORT", "11434"))
 
-# Direct Ollama (Final Fallback)
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 
 # QDRANT_URL =  "http://localhost:6333"
 QDRANT_URL           = os.environ.get("QDRANT_URL", "http://localhost:6333")
