@@ -1,4 +1,9 @@
 /* ===== CHAT LAYOUT ===== */
+html,
+body {
+  overflow-x: hidden;
+}
+
 .chat-layout {
   display: grid;
   grid-template-columns: 280px 1fr 0px;

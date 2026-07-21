@@ -211,6 +211,13 @@ function createMessageEl(msg) {
     ? msg.text.replace(/\[Book:[^\]]*?\]/g, '')
     : msg.text;
 
+  if (msg.sender === 'bot') {
+    rawText = rawText.replace(/<think>([\s\S]*?)(?:<\/think>|$)/gi, function(match, p1) {
+      var isOpen = !match.toLowerCase().endsWith('</think>') ? ' open' : '';
+      return '<details class="think-accordion" style="margin-bottom: 12px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-soft);"' + isOpen + '><summary style="cursor: pointer; padding: 8px 12px; font-size: 13px; font-weight: 500; color: var(--mute); user-select: none;">Thinking and gathering information...</summary><div style="padding: 12px; border-top: 1px solid var(--hairline); font-size: 13px; color: var(--mute); white-space: pre-wrap;">' + escapeHtml(p1) + '</div></details>\n\n';
+    });
+  }
+
   var content = (msg.sender === 'bot' && window.marked)
     ? marked.parse(rawText, { breaks: true })
     : escapeHtml(rawText);
