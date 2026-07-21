@@ -2133,6 +2133,11 @@ def retrieve_bundle(query: str, book_ids: list[str], mode: str) -> dict[str, Any
         if e.get("expanded_from_chunk_id")
     }
 
+    def _excerpt(text, maxlen=200):
+        t = (text or "").strip()
+        t = re.sub(r'^#+\s*', '', t)  # strip markdown heading markers
+        return t[:maxlen] + ("..." if len(t) > maxlen else "")
+
     sources: list[dict] = []
     for c in top:
         cid = c.get("chunk_id") or ""
@@ -2145,12 +2150,14 @@ def retrieve_bundle(query: str, book_ids: list[str], mode: str) -> dict[str, Any
         else:
             included = None  # retrieved but NOT shown to the LLM
 
+        txt = c.get("text") or c.get("full_content") or ""
         sources.append({
             "chunk_id": cid,
             "book_id": c.get("book_id"),
             "page_range": c.get("page_range"),
             "section_path": c.get("section_path"),
             "chunk_type": c.get("chunk_type"),
+            "excerpt": _excerpt(txt),
             "from_qdrant": c.get("from_qdrant"),
             "from_neo4j": c.get("from_neo4j"),
             "rerank_score": round(c.get("rerank_score", 0.0), 4),
@@ -2173,12 +2180,14 @@ def retrieve_bundle(query: str, book_ids: list[str], mode: str) -> dict[str, Any
         )
         if already:
             continue
+        pg_text = load_page_content(e["book_id"], e["page"])
         sources.append({
             "chunk_id": None,
             "book_id": e["book_id"],
             "page_range": [e["page"], e["page"]],
             "section_path": [],
             "chunk_type": "page_expansion",
+            "excerpt": _excerpt(pg_text) if pg_text else f"Page {e['page']}",
             "from_qdrant": False,
             "from_neo4j": False,
             "rerank_score": None,
